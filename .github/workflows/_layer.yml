@@ -23,7 +23,14 @@ jobs:
           service_account: ${{ vars.GCP_SA_EMAIL }}
 
       - uses: hashicorp/setup-terraform@v3
-      - uses: open-policy-agent/setup-conftest@v0
+
+      - name: 安装 conftest
+        run: |
+          CONFTEST_VERSION=0.68.2
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin conftest
+          conftest --version
+        working-directory: ${{ github.workspace }}
 
       - run: terraform init
       - run: terraform plan -out=plan.tfout
