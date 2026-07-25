@@ -1,9 +1,8 @@
 # ============================================================
-# 01-network(模块化):使用官方 terraform-google-modules/network
-#   - VPC + 子网 + 二级范围        → network 模块主体
-#   - Private Service Access(PSA) → private-service-access 子模块
-#   - Cloud NAT                    → cloud-nat 子模块
-# 官方模块经久考验,替代自研 compute_* 资源 
+# 01-network(模块化修正版)
+#   - VPC + 子网 + 二级范围 → 官方 network 模块
+#   - PSA(Cloud SQL 私有连接)→ 原生资源(参数明确,避免子模块版本差异)
+#   - Cloud NAT → 官方 cloud-router 模块
 # ============================================================
 
 # ── VPC + 子网 + 二级范围 ──
@@ -19,7 +18,7 @@ module "vpc" {
       subnet_name           = "fintech-vpc-gke-subnet"
       subnet_ip             = "10.10.0.0/20"
       subnet_region         = var.region
-      subnet_private_access = "true" # 私有节点访问 Google API 走私有通道
+      subnet_private_access = "true"
     }
   ]
 
@@ -31,14 +30,20 @@ module "vpc" {
   }
 }
 
-# ── Private Service Access:Cloud SQL 私有连接前置 ──
-module "private_service_access" {
-  source        = "terraform-google-modules/network/google//modules/private-service-access"
-  version       = "~> 18.1"
-  project_id    = var.project_id
-  vpc_network   = module.vpc.network_name
-  address       = "10.40.0.0"
+# ── Private Service Access:为 Google 托管服务预留私有 IP + 建 VPC Peering ──
+resource "google_compute_global_address" "psa_range" {
+  project       = var.project_id
+  name          = "fintech-vpc-psa-range"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
   prefix_length = 16
+  network       = module.vpc.network_self_link
+}
+
+resource "google_service_networking_connection" "psa" {
+  network                 = module.vpc.network_self_link
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.psa_range.name]
 }
 
 # ── Cloud NAT:私有节点出站 ──
@@ -55,7 +60,7 @@ module "cloud_router" {
   }]
 }
 
-# ── 输出供下游层(remote_state)引用 ──
+# ── 输出供下游层引用 ──
 output "network_name" {
   value = module.vpc.network_name
 }
@@ -75,4 +80,3 @@ output "pods_range_name" {
 output "services_range_name" {
   value = "services"
 }
-# trigger
