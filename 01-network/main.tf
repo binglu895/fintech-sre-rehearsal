@@ -3,7 +3,7 @@
 #   - VPC + 子网 + 二级范围        → network 模块主体
 #   - Private Service Access(PSA) → private-service-access 子模块
 #   - Cloud NAT                    → cloud-nat 子模块
-# 官方模块经久考验,替代自研 compute_* 资源。
+# 官方模块经久考验,替代自研 compute_* 资源 
 # ============================================================
 
 # ── VPC + 子网 + 二级范围 ──
