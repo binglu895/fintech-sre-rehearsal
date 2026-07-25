@@ -13,8 +13,3 @@ resources_of_type(plan, resource_type) := [r |
 	some a in actions
 	a in {"create", "update"}
 ]
-
-# 安全取嵌套字段,路径不存在时返回 default(避免 plan 结构缺字段导致报错)
-get_default(obj, key, default) := value if {
-	value := obj[key]
-} else := default
