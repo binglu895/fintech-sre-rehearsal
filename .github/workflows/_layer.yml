@@ -36,8 +36,19 @@ jobs:
       - run: terraform plan -out=plan.tfout
       - run: terraform show -json plan.tfout > plan.json
 
-      - name: OPA 门禁
-        run: conftest test plan.json -p ${{ github.workspace }}/policies
+      - name: OPA 门禁(deny 阻断 / warn 仅提示)
+        # conftest 默认:deny 违规 → 失败退出;warn 违规 → 仅显示不失败。
+        # 故一条命令即实现分级:硬红线阻断合并,建议项只提示。
+        run: conftest test plan.json -p ${{ github.workspace }}/policies --output table
+
+      - name: Checkov 兜底扫描(通用基线,soft 不阻断)
+        continue-on-error: true
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ inputs.layer_dir }}
+          framework: terraform
+          soft_fail: true
+          output_format: cli
 
       - name: Apply(仅 main 分支合并后)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
