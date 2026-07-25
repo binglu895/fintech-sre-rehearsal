@@ -1,0 +1,5 @@
+*.tfstate
+*.tfstate.*
+.terraform/
+plan.tfout
+plan.json

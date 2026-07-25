@@ -1,0 +1,17 @@
+{
+  "resource_changes": [
+    {
+      "address": "google_sql_database_instance.bad",
+      "type": "google_sql_database_instance",
+      "change": {
+        "after": {
+          "deletion_protection": false,
+          "settings": {
+            "availability_type": "ZONAL",
+            "ip_configuration": { "ipv4_enabled": true }
+          }
+        }
+      }
+    }
+  ]
+}

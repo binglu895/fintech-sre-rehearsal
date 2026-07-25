@@ -1,0 +1,17 @@
+{
+  "resource_changes": [
+    {
+      "address": "google_sql_database_instance.ledger",
+      "type": "google_sql_database_instance",
+      "change": {
+        "after": {
+          "deletion_protection": true,
+          "settings": {
+            "availability_type": "REGIONAL",
+            "ip_configuration": { "ipv4_enabled": false }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+name: gcp-fintech-iac
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write        # 换 OIDC 令牌必需
+  contents: read
+  pull-requests: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      network: ${{ steps.f.outputs.network }}
+      db:      ${{ steps.f.outputs.db }}
+      gke:     ${{ steps.f.outputs.gke }}
+      apps:    ${{ steps.f.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            network: ['01-network/**']
+            db:      ['02-core-db/**']
+            gke:     ['03-gke-platform/**']
+            apps:    ['04-apps/**']
+
+  network:
+    needs: detect
+    if: needs.detect.outputs.network == 'true'
+    uses: ./.github/workflows/_layer.yml
+    with: { layer_dir: 01-network }
+    secrets: inherit
+
+  db:
+    needs: [detect, network]
+    # network 有变更则等它;否则 detect 后即可跑
+    if: |
+      always() && needs.detect.outputs.db == 'true' &&
+      (needs.network.result == 'success' || needs.network.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with: { layer_dir: 02-core-db }
+    secrets: inherit
+
+  gke:
+    needs: [detect, db]
+    if: |
+      always() && needs.detect.outputs.gke == 'true' &&
+      (needs.db.result == 'success' || needs.db.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with: { layer_dir: 03-gke-platform }
+    secrets: inherit
+
+  apps:
+    needs: [detect, gke]
+    if: |
+      always() && needs.detect.outputs.apps == 'true' &&
+      (needs.gke.result == 'success' || needs.gke.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with: { layer_dir: 04-apps }
+    secrets: inherit

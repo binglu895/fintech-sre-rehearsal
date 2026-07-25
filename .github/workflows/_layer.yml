@@ -1,0 +1,37 @@
+on:
+  workflow_call:
+    inputs:
+      layer_dir: { required: true, type: string }
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.layer_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - uses: hashicorp/setup-terraform@v3
+      - uses: open-policy-agent/setup-conftest@v0
+
+      - run: terraform init
+      - run: terraform plan -out=plan.tfout
+      - run: terraform show -json plan.tfout > plan.json
+
+      - name: OPA 门禁
+        run: conftest test plan.json -p ${{ github.workspace }}/policies
+
+      - name: Apply(仅 main 分支合并后)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve plan.tfout
