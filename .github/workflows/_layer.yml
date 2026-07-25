@@ -8,7 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  run:
+  # ── Job 1:认证 + plan + OPA 门禁 + Checkov,产出 plan 文件 ──
+  plan:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,11 +38,9 @@ jobs:
       - run: terraform show -json plan.tfout > plan.json
 
       - name: OPA 门禁(deny 阻断 / warn 仅提示)
-        # conftest 默认:deny 违规 → 失败退出;warn 违规 → 仅显示不失败。
-        # 故一条命令即实现分级:硬红线阻断合并,建议项只提示。
         run: conftest test plan.json -p ${{ github.workspace }}/policies --output table
 
-      - name: Checkov 兜底扫描(通用基线,soft 不阻断)
+      - name: Checkov 兜底扫描(soft 不阻断)
         continue-on-error: true
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -50,6 +49,43 @@ jobs:
           soft_fail: true
           output_format: cli
 
-      - name: Apply(仅 main 分支合并后)
+      # 把 plan 二进制产物存起来,传给 apply job(保证 apply 的正是审过的 plan)
+      - name: 上传 plan 产物
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.layer_dir }}
+          path: ${{ inputs.layer_dir }}/plan.tfout
+          retention-days: 1
+
+  # ── Job 2:apply,绑定审批环境 → 执行前暂停等人工 Approve ──
+  apply:
+    needs: plan
+    # 仅合并进 main 后才 apply;PR 阶段只到 plan/OPA
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production-apply   # ← 该环境配 Required reviewers,apply 前会暂停等审批
+    defaults:
+      run:
+        working-directory: ${{ inputs.layer_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      # 取回 plan job 生成的 plan 文件,apply 的正是被审过的那份
+      - name: 下载 plan 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.layer_dir }}
+          path: ${{ inputs.layer_dir }}
+
+      - run: terraform init
+      - name: Apply(审批通过后执行)
         run: terraform apply -auto-approve plan.tfout
