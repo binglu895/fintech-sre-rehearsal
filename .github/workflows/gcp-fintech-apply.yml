@@ -1,0 +1,81 @@
+name: gcp-fintech-apply
+
+# 手动重建:Actions 页面点 "Run workflow",选择环境 + 范围。
+# 与主流水线解耦,专用于"销毁后一键重建"或"按需重建某层"。
+# 按序重建:01-network → 02-core-db → 03-gke-platform → 04-apps。
+# 保留 OPA 门禁;prod 走 production-apply 环境需人工审批。
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "环境:dev / test / prod"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      layer:
+        description: "重建范围(ALL=按序 01→02→03→04;或选单层)"
+        required: true
+        default: ALL
+        type: choice
+        options:
+          - ALL
+          - 01-network
+          - 02-core-db
+          - 03-gke-platform
+          - 04-apps
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    # 按环境绑定审批门:dev/test 各自环境,prod 走 production-apply(需人工 Approve)
+    environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+          service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: 安装 conftest
+        run: |
+          CONFTEST_VERSION=0.68.2
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin conftest
+          conftest --version
+
+      - name: 按序重建(init → plan → OPA → apply)
+        env:
+          ENVN: ${{ inputs.env }}
+          LAYER: ${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          if [ "$LAYER" = "ALL" ]; then
+            LAYERS="01-network 02-core-db 03-gke-platform 04-apps"
+          else
+            LAYERS="$LAYER"
+          fi
+          for L in $LAYERS; do
+            echo "==================== 重建 [$ENVN] $L ===================="
+            cd "$GITHUB_WORKSPACE/$L"
+            terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/$L.backend.hcl"
+            terraform plan -var-file="$GITHUB_WORKSPACE/envs/$ENVN/$L.tfvars" -out=plan.tfout
+            terraform show -json plan.tfout > plan.json
+            # OPA 门禁(环境感知):dev 宽松 / test·prod 严格
+            conftest test plan.json \
+              -p "$GITHUB_WORKSPACE/policies" \
+              -d "$GITHUB_WORKSPACE/opa-data/$ENVN.json" \
+              --output table
+            terraform apply -auto-approve plan.tfout
+            echo "==================== 完成 $L ===================="
+          done
