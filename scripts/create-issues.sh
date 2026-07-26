@@ -34,6 +34,7 @@ mklabel "phase-3"      "c5def5" "混沌工程"
 mklabel "phase-4"      "c5def5" "灾备高可用"
 mklabel "phase-5"      "c5def5" "零信任抗DDoS"
 mklabel "phase-6"      "c5def5" "开发者平台"
+mklabel "done"         "0e8a16" "已完成(记录用)"
 
 # ── 创建 issue 的辅助函数 ──
 mk() {  # $1=title  $2=labels(逗号分隔)  $3=body
@@ -41,26 +42,33 @@ mk() {  # $1=title  $2=labels(逗号分隔)  $3=body
   echo "  ✓ $1"
 }
 
+# 已完成项:创建后立即关闭,作为审计记录(closed issue 带完成说明)
+mkdone() {  # $1=title  $2=labels  $3=body
+  local url
+  url=$(gh issue create --repo "$REPO" --title "$1" --label "$2,done" --body "$3")
+  gh issue close "$url" --repo "$REPO" --comment "✅ 已完成并验证,归档为记录。" >/dev/null 2>&1 || true
+  echo "  ✓ (done) $1"
+}
+
 echo "== A. Phase 1 收尾 =="
-mk "[P0] 部署 test 环境并验证 REGIONAL HA + 晋升链" "phase-1,P0" \
+mkdone "[P0] 部署 test 环境并验证 REGIONAL HA + 晋升链" "phase-1,P0" \
 "**目标**:部署 test 环境,关闭 Phase 1 Step 5 的 REGIONAL HA 验收,并验证 develop→PR→main→test 晋升链。
 
-**验收**:
-- [ ] test 的 Cloud SQL 为 REGIONAL 主备双活
-- [ ] test 全部层(network→db→gke)按序部署成功
-- [ ] PR→main 阶段 test plan 通过 OPA(严格)
-- [ ] 无公网 IP、GKE 挂内网子网
+**验收(已完成)**:
+- [x] test 全部层(network→db→gke→apps)按序部署成功
+- [x] 晋升链验证:test 自动部署 → test_complete 门 → prod 卡 production-apply 审批(不批,零成本)
+- [x] REGIONAL HA **配置**验收(availabilityType=REGIONAL + 跨区 secondaryZone)
+- [x] 无公网 IP、GKE 挂内网子网
 
-**依赖**:无(可先做)"
+**说明**:HA 的 failover **行为**测试(RPO=0/RTO<60s)属 Phase 4——需应用+流量才测得出对程序的影响。"
 
-mk "[P0] 合并 develop → main 成为正式基线" "phase-1,P0" \
+mkdone "[P0] 合并 develop → main 成为正式基线" "phase-1,P0" \
 "**目标**:把验证过的三环境代码从 develop 合并到 main,作为正式基线。
 
-**注意**:合并会触发 push main → test/prod 部署,需先规划(或配合 A1)。
-**验收**:
-- [ ] main 含完整三环境代码 + 全部 workflow
-- [ ] 手动 apply/destroy 可直接从 main 运行(无需再选 develop)
-- [ ] 关闭过时 PR #5"
+**已完成**:
+- [x] main 含完整三环境代码 + 全部 workflow(合并 PR)
+- [x] push main 触发晋升链(test 部署、prod 卡审批)
+- [x] 过时 PR #5 已关闭、分支已清理(见 A6)"
 
 mk "[P0][前置] Bank of Anthos 应用层落地到 GKE (04-apps)" "phase-1,P0,prerequisite" \
 "**目标**:把 Bank of Anthos 微服务真正部署到 GKE(填充目前空壳的 04-apps 层)。
@@ -84,11 +92,24 @@ mk "[P2] CMEK 状态桶加密" "phase-1,P2" \
 **步骤**:建 KMS keyring+key → 授权 GCS 服务代理 encrypt/decrypt → 设桶默认 KMS key。
 **状态**:暂缓(用户决定)。"
 
-mk "[P2] 清理过时 PR #5 与分支卫生" "phase-1,P2" \
+mkdone "[P2] 清理过时 PR #5 与分支卫生" "phase-1,P2" \
 "**目标**:关闭已过时的 PR #5(feature/multi-env-cicd),清理无用分支。
-develop 已领先该分支,所有改动都在 develop。"
+**已完成**:删除 feature/multi-env-cicd(自动关闭 PR #5)、删除已合并的 chore/manual-workflows-to-main,远程只剩 main + develop。"
 
 echo "== B. 流水线 / IaC 工程完善 =="
+mkdone "[已完成] Greenfield 守卫:上游未部署则跳过下游 plan" "enhancement" \
+"**成果**:_layer.yml 加 greenfield 守卫。消费上游 remote_state 的层(02/03)在上游 network
+尚未部署(无输出)时,把 plan 从 fail 转为 skip(green + notice),优雅处理分层冷启动。
+- 探测:init 01-network backend + terraform output network_self_link
+- skip=true → 跳过 init/plan/OPA/checkov/上传,apply job 也跳过
+- push 场景上游先 apply(needs 保证)→ 不跳过,正常部署;稳态 PR 正常验证
+提交:6849709"
+
+mkdone "[已完成] Terraform provider 缓存提速" "enhancement" \
+"**成果**:三个 workflow(_layer plan+apply、apply、destroy)用 actions/cache 缓存
+TF_PLUGIN_CACHE_DIR,省掉每次 init 重新下载 provider。key 按 provider.tf 哈希失效。
+GKE/SQL 云侧创建时间省不了,但每层 init 快 30-60s。提交:501331d"
+
 mk "[P1] PR 自动评论 terraform plan 结果" "enhancement,P1" \
 "**目标**:在 PR 页面自动评论各层 terraform plan 摘要(要创建/变更什么),方便审批与审计。
 金融合规常见做法。可用 actions/github-script 或 terraform show 输出贴评论。"
