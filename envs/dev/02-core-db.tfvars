@@ -6,6 +6,6 @@ project_id   = "kqeardr-gcp-shimano-internal"
 region       = "asia-northeast1"
 state_bucket = "fintech-iac-states-dev"
 
-tier                = "db-custom-1-3840"
+tier                = "db-f1-micro" # 最便宜的共享核(ZONAL 才支持),dev 演练够用
 availability_type   = "ZONAL"
 deletion_protection = false

@@ -5,6 +5,6 @@ project_id   = "kqeardr-gcp-shimano-internal"
 region       = "asia-northeast1"
 state_bucket = "fintech-iac-states-prod"
 
-tier                = "db-custom-2-8192"
+tier                = "db-custom-1-3840" # 演练降本;真实 prod 可上调(如 db-custom-2-8192)
 availability_type   = "REGIONAL"
 deletion_protection = true
