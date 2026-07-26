@@ -36,19 +36,18 @@ jobs:
     runs-on: ubuntu-latest
     # 按环境绑定审批门:dev 用 dev 环境(可无审批),test/prod 用各自审批环境
     environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
-    defaults:
-      run:
-        working-directory: ${{ inputs.layer }}
     steps:
+      # 先 checkout,保证后续步骤有代码和目录
+      - uses: actions/checkout@v4
+
+      # 校验确认词(在仓库根目录跑,不进层目录)
       - name: 校验确认词
         run: |
           if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
-            echo "确认词错误(应为 DESTROY),已中止。"
+            echo "确认词错误(应为 DESTROY),已中止。输入的是:${{ inputs.confirm }}"
             exit 1
           fi
           echo "确认词通过,准备销毁 [${{ inputs.env }}] ${{ inputs.layer }}"
-
-      - uses: actions/checkout@v4
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -59,15 +58,19 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: terraform init
+        working-directory: ${{ inputs.layer }}
         run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.backend.hcl
 
-      # 02-core-db 若开了 deletion_protection,须先关闭才能删。
+      # 02-core-db 若开了 deletion_protection,须先关闭才能删
       - name: 关闭删除保护(仅 02-core-db)
         if: inputs.layer == '02-core-db'
+        working-directory: ${{ inputs.layer }}
         run: terraform apply -auto-approve -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/02-core-db.tfvars -var="deletion_protection=false"
 
       - name: 销毁计划(先看要删什么)
+        working-directory: ${{ inputs.layer }}
         run: terraform plan -destroy -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.tfvars -out=destroy.tfout
 
       - name: 执行销毁
+        working-directory: ${{ inputs.layer }}
         run: terraform apply -auto-approve destroy.tfout
