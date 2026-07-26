@@ -90,20 +90,31 @@ gcloud iam workload-identity-pools providers create-oidc github-provider \
 POOL=projects/$(gcloud projects describe $PROJECT --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool
 REPO=<你的-org>/<你的-repo>
 
-# dev SA:只信任 develop 分支
+# dev SA:只信任 develop 分支(dev 仅在 push develop 部署,不在 PR 跑 plan → 最严)
 gcloud iam service-accounts add-iam-policy-binding \
   sa-fintech-dev@$PROJECT.iam.gserviceaccount.com --project=$PROJECT \
   --role=roles/iam.workloadIdentityUser \
   --member="principalSet://iam.googleapis.com/$POOL/attribute.ref/refs/heads/develop"
 
-# test / prod SA:只信任 main 分支(prod 的最终门禁靠 GitHub Environment 审批)
+# test / prod SA:仓库级信任(见下方"WIF + PR"说明)
 for e in test prod; do
   gcloud iam service-accounts add-iam-policy-binding \
     sa-fintech-$e@$PROJECT.iam.gserviceaccount.com --project=$PROJECT \
     --role=roles/iam.workloadIdentityUser \
-    --member="principalSet://iam.googleapis.com/$POOL/attribute.ref/refs/heads/main"
+    --member="principalSet://iam.googleapis.com/$POOL/attribute.repository/$REPO"
 done
 ```
+
+> ### ⚠️ WIF + PR 的关键坑
+> PR 事件(`pull_request`)的 OIDC 令牌 `ref` 是 `refs/pull/<N>/merge`,**不是** `refs/heads/main`。
+> 若把 test/prod SA 只绑到 `attribute.ref/refs/heads/main`,则 **PR 阶段的 test/prod plan 会 WIF 认证失败**。
+> 因此 test/prod SA 改绑 `attribute.repository/<org>/<repo>`(仓库级,覆盖 PR)。
+>
+> **为什么仍安全**:即使 WIF 放宽到仓库级,`apply` 依然被三重门挡住 ——
+> ① `_layer.yml` 的 apply job `if: github.event_name == 'push'`(PR 只能 plan);
+> ② caller 里 test/prod 仅在 `push main` 或 PR 时跑;
+> ③ prod 还需 `production-apply` 环境的人工审批 + main-only 部署规则。
+> PR 拿到身份只能**读状态跑 plan**,改基础设施必须 push main + 人工批。
 
 > WIF Provider 完整资源名形如:
 > `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
