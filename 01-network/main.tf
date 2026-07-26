@@ -25,6 +25,11 @@ module "vpc" {
       subnet_ip             = var.subnet_cidr
       subnet_region         = var.region
       subnet_private_access = "true"
+      # 满足组织策略 constraints/compute.requireVpcFlowLogs:子网必须开启 Flow Logs
+      subnet_flow_logs          = "true"
+      subnet_flow_logs_interval = "INTERVAL_5_SEC"
+      subnet_flow_logs_sampling = "0.5"
+      subnet_flow_logs_metadata = "INCLUDE_ALL_METADATA"
     }
   ]
 
