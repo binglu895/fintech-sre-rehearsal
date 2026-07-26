@@ -1,23 +1,16 @@
 # ============================================================
-# 02-core-db(模块化):官方 sql-db//modules/postgresql(~> 28.x)
-# 满足 OPA 三条红线:REGIONAL / deletion_protection / 无公网 IP
-# 字段严格对齐官方 28.x 示例。
+# 02-core-db(多环境参数化):官方 sql-db//modules/postgresql(~> 28.x)
+# 满足 OPA 红线:REGIONAL(test/prod)/ deletion_protection / 无公网 IP
 # ============================================================
 
-variable "project_id" {
-  type    = string
-  default = "kqeardr-gcp-shimano-internal"
-}
-
-variable "region" {
-  type    = string
-  default = "asia-northeast1"
+locals {
+  name_prefix = "fintech-${var.env}"
 }
 
 data "terraform_remote_state" "network" {
   backend = "gcs"
   config = {
-    bucket = "fintech-iac-states-prod"
+    bucket = var.state_bucket
     prefix = "network/state"
   }
 }
@@ -27,13 +20,13 @@ module "postgresql" {
   version = "~> 28.1"
 
   project_id       = var.project_id
-  name             = "ledger-db-prod"
+  name             = "ledger-db-${var.env}"
   database_version = "POSTGRES_15"
   region           = var.region
-  tier             = "db-custom-2-8192"
+  tier             = var.tier
 
-  availability_type   = "REGIONAL" # 红线①
-  deletion_protection = true       # 红线②
+  availability_type   = var.availability_type   # 红线①(dev 环境可豁免为 ZONAL)
+  deletion_protection = var.deletion_protection  # 红线②(dev 环境可豁免为 false)
 
   # 红线③:无公网 IP + 私有连接指向 01 层 VPC
   ip_configuration = {
@@ -44,7 +37,6 @@ module "postgresql" {
     authorized_networks = []
   }
 
-  # 维护窗口(平铺参数,非嵌套块)
   maintenance_window_day          = 7 # 周日
   maintenance_window_hour         = 3
   maintenance_window_update_track = "stable"

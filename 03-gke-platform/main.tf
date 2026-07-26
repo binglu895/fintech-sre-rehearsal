@@ -1,22 +1,17 @@
 # ============================================================
-# 03-gke-platform(模块化):官方 kubernetes-engine//modules/private-cluster
+# 03-gke-platform(多环境参数化):官方 kubernetes-engine//modules/private-cluster
 # 私有集群 + Workload Identity,挂 01-network 的子网和二级范围。
+# 子网名从 01 层 remote_state 读取(已带 env 前缀),不再写死。
 # ============================================================
 
-variable "project_id" {
-  type    = string
-  default = "kqeardr-gcp-shimano-internal"
-}
-
-variable "region" {
-  type    = string
-  default = "asia-northeast1"
+locals {
+  name_prefix = "fintech-${var.env}"
 }
 
 data "terraform_remote_state" "network" {
   backend = "gcs"
   config = {
-    bucket = "fintech-iac-states-prod"
+    bucket = var.state_bucket
     prefix = "network/state"
   }
 }
@@ -26,20 +21,25 @@ module "gke" {
   version = "~> 37.0"
 
   project_id = var.project_id
-  name       = "fintech-gke"
+  name       = "${local.name_prefix}-gke"
   region     = var.region
-  regional   = true
+  regional   = var.regional
+  zones      = var.zones
 
-  # 挂 01-network 的网络(用 network_name / subnet 名,模块内部按 project+region 解析)
+  # 复用现有 SA 作节点身份,避免模块新建 SA(需 iam.serviceAccounts.create)
+  create_service_account = false
+  service_account        = var.node_service_account
+
+  # 挂 01-network 的网络(名称从 remote_state 读取,已带 env 前缀)
   network           = data.terraform_remote_state.network.outputs.network_name
-  subnetwork        = "fintech-vpc-gke-subnet"
+  subnetwork        = data.terraform_remote_state.network.outputs.subnetwork_name
   ip_range_pods     = data.terraform_remote_state.network.outputs.pods_range_name
   ip_range_services = data.terraform_remote_state.network.outputs.services_range_name
 
   # 私有集群:节点无公网 IP
   enable_private_nodes    = true
   enable_private_endpoint = false # 控制平面保留公网端点便于管理;true 需堡垒机
-  master_ipv4_cidr_block  = "172.16.0.0/28"
+  master_ipv4_cidr_block  = var.master_ipv4_cidr_block
 
   # Workload Identity(pull 式 GitOps 前提)
   identity_namespace = "${var.project_id}.svc.id.goog"
@@ -48,10 +48,10 @@ module "gke" {
   node_pools = [
     {
       name         = "primary-pool"
-      machine_type = "e2-standard-4"
-      min_count    = 1
-      max_count    = 3
-      disk_size_gb = 50
+      machine_type = var.machine_type
+      min_count    = var.min_count
+      max_count    = var.max_count
+      disk_size_gb = var.disk_size_gb
       disk_type    = "pd-standard"
       auto_repair  = true
       auto_upgrade = true

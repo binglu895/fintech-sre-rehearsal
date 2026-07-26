@@ -1,31 +1,42 @@
 # ============================================================
-# 01-network(模块化修正版)
+# 01-network(多环境参数化版)
 #   - VPC + 子网 + 二级范围 → 官方 network 模块
-#   - PSA(Cloud SQL 私有连接)→ 原生资源(参数明确,避免子模块版本差异)
+#   - PSA(Cloud SQL 私有连接)→ 原生资源
 #   - Cloud NAT → 官方 cloud-router 模块
+# 所有资源名带 ${var.env} 前缀,单项目内 dev/test/prod 三套并存不冲突。
 # ============================================================
+
+locals {
+  name_prefix = "fintech-${var.env}"
+  subnet_name = "${local.name_prefix}-gke-subnet"
+}
 
 # ── VPC + 子网 + 二级范围 ──
 module "vpc" {
   source       = "terraform-google-modules/network/google"
   version      = "~> 18.1"
   project_id   = var.project_id
-  network_name = "fintech-vpc"
+  network_name = "${local.name_prefix}-vpc"
   routing_mode = "REGIONAL"
 
   subnets = [
     {
-      subnet_name           = "fintech-vpc-gke-subnet"
-      subnet_ip             = "10.10.0.0/20"
+      subnet_name           = local.subnet_name
+      subnet_ip             = var.subnet_cidr
       subnet_region         = var.region
       subnet_private_access = "true"
+      # 满足组织策略 constraints/compute.requireVpcFlowLogs:子网必须开启 Flow Logs
+      subnet_flow_logs          = "true"
+      subnet_flow_logs_interval = "INTERVAL_5_SEC"
+      subnet_flow_logs_sampling = "0.5"
+      subnet_flow_logs_metadata = "INCLUDE_ALL_METADATA"
     }
   ]
 
   secondary_ranges = {
-    "fintech-vpc-gke-subnet" = [
-      { range_name = "pods", ip_cidr_range = "10.20.0.0/16" },
-      { range_name = "services", ip_cidr_range = "10.30.0.0/20" },
+    (local.subnet_name) = [
+      { range_name = "pods", ip_cidr_range = var.pods_cidr },
+      { range_name = "services", ip_cidr_range = var.services_cidr },
     ]
   }
 }
@@ -33,10 +44,10 @@ module "vpc" {
 # ── Private Service Access:为 Google 托管服务预留私有 IP + 建 VPC Peering ──
 resource "google_compute_global_address" "psa_range" {
   project       = var.project_id
-  name          = "fintech-vpc-psa-range"
+  name          = "${local.name_prefix}-psa-range"
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
-  prefix_length = 16
+  prefix_length = var.psa_prefix_length
   network       = module.vpc.network_self_link
 }
 
@@ -50,13 +61,13 @@ resource "google_service_networking_connection" "psa" {
 module "cloud_router" {
   source  = "terraform-google-modules/cloud-router/google"
   version = "~> 6.0"
-  name    = "fintech-vpc-router"
+  name    = "${local.name_prefix}-router"
   project = var.project_id
   region  = var.region
   network = module.vpc.network_name
 
   nats = [{
-    name = "fintech-vpc-nat"
+    name = "${local.name_prefix}-nat"
   }]
 }
 
@@ -69,8 +80,12 @@ output "network_self_link" {
   value = module.vpc.network_self_link
 }
 
+output "subnetwork_name" {
+  value = local.subnet_name
+}
+
 output "subnet_self_link" {
-  value = module.vpc.subnets["${var.region}/fintech-vpc-gke-subnet"].self_link
+  value = module.vpc.subnets["${var.region}/${local.subnet_name}"].self_link
 }
 
 output "pods_range_name" {
@@ -80,6 +95,3 @@ output "pods_range_name" {
 output "services_range_name" {
   value = "services"
 }
-# test branch flow Sat Jul 25 18:40:27     2026
-# test branch flow Sat Jul 25 18:44:48     2026
-# PR round2 Sat Jul 25 18:57:42     2026

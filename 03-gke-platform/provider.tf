@@ -2,7 +2,7 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.0"
+      version = ">= 6.38, < 7.0" # 对齐 kubernetes-engine 37.0 要求(注意 < 7)
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -12,8 +12,8 @@ terraform {
 }
 
 provider "google" {
-  project = "kqeardr-gcp-shimano-internal"
-  region  = "asia-northeast1"
+  project = var.project_id
+  region  = var.region
 }
 
 # private-cluster 模块的 K8s 资源需要 kubernetes provider。

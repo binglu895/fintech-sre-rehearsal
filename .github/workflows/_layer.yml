@@ -1,14 +1,18 @@
 on:
   workflow_call:
     inputs:
-      layer_dir: { required: true, type: string }
+      layer_dir:        { required: true, type: string }   # 01-network / 02-core-db / ...
+      env:              { required: true, type: string }   # dev / test / prod
+      environment_name: { required: true, type: string }   # 绑定的 GitHub Environment(审批门 + 凭证隔离)
+      wif_provider:     { required: true, type: string }   # 本环境的 WIF Provider(由 caller 按 env 传入)
+      sa_email:         { required: true, type: string }   # 本环境的 Service Account
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # ── Job 1:认证 + plan + OPA 门禁 + Checkov,产出 plan 文件 ──
+  # ── Job 1:认证 + plan + OPA 门禁(环境感知)+ Checkov,产出 plan 文件 ──
   plan:
     runs-on: ubuntu-latest
     defaults:
@@ -20,8 +24,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SA_EMAIL }}
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.sa_email }}
 
       - uses: hashicorp/setup-terraform@v3
 
@@ -33,12 +37,23 @@ jobs:
           conftest --version
         working-directory: ${{ github.workspace }}
 
-      - run: terraform init
-      - run: terraform plan -out=plan.tfout
-      - run: terraform show -json plan.tfout > plan.json
+      # backend 与变量按环境注入(同一份代码,三环境独立 state + 独立参数)
+      - name: terraform init
+        run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer_dir }}.backend.hcl
 
-      - name: OPA 门禁(deny 阻断 / warn 仅提示)
-        run: conftest test plan.json -p ${{ github.workspace }}/policies --output table
+      - name: terraform plan
+        run: terraform plan -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer_dir }}.tfvars -out=plan.tfout
+
+      - name: terraform show → json
+        run: terraform show -json plan.tfout > plan.json
+
+      # OPA:-p 加载 rego 规则,-d 注入本环境合规级别(dev 宽松 / test·prod 严格)
+      - name: OPA 门禁(环境感知 deny/warn)
+        run: |
+          conftest test plan.json \
+            -p ${{ github.workspace }}/policies \
+            -d ${{ github.workspace }}/opa-data/${{ inputs.env }}.json \
+            --output table
 
       - name: Checkov 兜底扫描(soft 不阻断)
         continue-on-error: true
@@ -49,22 +64,22 @@ jobs:
           soft_fail: true
           output_format: cli
 
-      # 把 plan 二进制产物存起来,传给 apply job(保证 apply 的正是审过的 plan)
+      # 保存审过的 plan,apply job 复用(保证 apply 的正是被审过的那份)
       - name: 上传 plan 产物
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-${{ inputs.layer_dir }}
+          name: tfplan-${{ inputs.env }}-${{ inputs.layer_dir }}
           path: ${{ inputs.layer_dir }}/plan.tfout
           retention-days: 1
 
-  # ── Job 2:apply,绑定审批环境 → 执行前暂停等人工 Approve ──
+  # ── Job 2:apply,绑定环境审批门 → 执行前暂停等人工 Approve ──
   apply:
     needs: plan
-    # 仅合并进 main 后才 apply;PR 阶段只到 plan/OPA
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # PR 阶段只到 plan/OPA;push 才 apply(dev=push develop / test·prod=push main,由 caller 控制)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: production-apply   # ← 该环境配 Required reviewers,apply 前会暂停等审批
+    environment: ${{ inputs.environment_name }}   # ← 该环境配 Required reviewers 等保护规则
     defaults:
       run:
         working-directory: ${{ inputs.layer_dir }}
@@ -74,18 +89,19 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SA_EMAIL }}
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.sa_email }}
 
       - uses: hashicorp/setup-terraform@v3
 
-      # 取回 plan job 生成的 plan 文件,apply 的正是被审过的那份
       - name: 下载 plan 产物
         uses: actions/download-artifact@v4
         with:
-          name: tfplan-${{ inputs.layer_dir }}
+          name: tfplan-${{ inputs.env }}-${{ inputs.layer_dir }}
           path: ${{ inputs.layer_dir }}
 
-      - run: terraform init
+      - name: terraform init
+        run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer_dir }}.backend.hcl
+
       - name: Apply(审批通过后执行)
         run: terraform apply -auto-approve plan.tfout

@@ -1,15 +1,27 @@
 name: gcp-fintech-iac
+
+# ─────────────────────────────────────────────────────────────
+# 分支 → 环境 晋升模型(Trunk-based 变体):
+#   push develop      → 部署 Dev(沙箱,自动,OPA 宽松)
+#   pull_request→main → 对 Test + Prod 两套配置跑 plan/OPA(只验证不部署)
+#   push main         → 部署 Test(自动,轻量审批)→ 通过后 部署 Prod(严格审批)
+# 同一个 commit 依次经过 Test→Prod,保证"测的就是要部署的",满足审计。
+#
+# 手动重建/销毁用独立 workflow:gcp-fintech-apply.yml / gcp-fintech-destroy.yml
+# ─────────────────────────────────────────────────────────────
 on:
   pull_request:
-  push:
     branches: [main]
+  push:
+    branches: [main, develop]
 
 permissions:
-  id-token: write        # 换 OIDC 令牌必需
+  id-token: write
   contents: read
   pull-requests: write
 
 jobs:
+  # ── 路径侦测:哪些层有变更 ──
   detect:
     runs-on: ubuntu-latest
     outputs:
@@ -23,42 +35,216 @@ jobs:
         id: f
         with:
           filters: |
-            network: ['01-network/**']
-            db:      ['02-core-db/**']
-            gke:     ['03-gke-platform/**']
-            apps:    ['04-apps/**']
+            network: ['01-network/**', 'envs/**/01-network.*', 'policies/**', 'opa-data/**']
+            db:      ['02-core-db/**', 'envs/**/02-core-db.*', 'policies/**', 'opa-data/**']
+            gke:     ['03-gke-platform/**', 'envs/**/03-gke-platform.*', 'policies/**', 'opa-data/**']
+            apps:    ['04-apps/**', 'envs/**/04-apps.*']
 
-  network:
+  # ═══════════════════════════════════════════════════════════
+  #  DEV 环境:仅 push develop 时部署(沙箱,自动,无审批)
+  # ═══════════════════════════════════════════════════════════
+  dev_network:
     needs: detect
-    if: needs.detect.outputs.network == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && needs.detect.outputs.network == 'true'
     uses: ./.github/workflows/_layer.yml
-    with: { layer_dir: 01-network }
+    with:
+      layer_dir: 01-network
+      env: dev
+      environment_name: dev
+      wif_provider: ${{ vars.WIF_PROVIDER_DEV }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_DEV }}
     secrets: inherit
 
-  db:
-    needs: [detect, network]
-    # network 有变更则等它;否则 detect 后即可跑
+  dev_db:
+    needs: [detect, dev_network]
     if: |
-      always() && needs.detect.outputs.db == 'true' &&
-      (needs.network.result == 'success' || needs.network.result == 'skipped')
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
+      needs.detect.outputs.db == 'true' &&
+      (needs.dev_network.result == 'success' || needs.dev_network.result == 'skipped')
     uses: ./.github/workflows/_layer.yml
-    with: { layer_dir: 02-core-db }
+    with:
+      layer_dir: 02-core-db
+      env: dev
+      environment_name: dev
+      wif_provider: ${{ vars.WIF_PROVIDER_DEV }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_DEV }}
     secrets: inherit
 
-  gke:
-    needs: [detect, db]
+  dev_gke:
+    needs: [detect, dev_db]
     if: |
-      always() && needs.detect.outputs.gke == 'true' &&
-      (needs.db.result == 'success' || needs.db.result == 'skipped')
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
+      needs.detect.outputs.gke == 'true' &&
+      (needs.dev_db.result == 'success' || needs.dev_db.result == 'skipped')
     uses: ./.github/workflows/_layer.yml
-    with: { layer_dir: 03-gke-platform }
+    with:
+      layer_dir: 03-gke-platform
+      env: dev
+      environment_name: dev
+      wif_provider: ${{ vars.WIF_PROVIDER_DEV }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_DEV }}
     secrets: inherit
 
-  apps:
-    needs: [detect, gke]
+  dev_apps:
+    needs: [detect, dev_gke]
     if: |
-      always() && needs.detect.outputs.apps == 'true' &&
-      (needs.gke.result == 'success' || needs.gke.result == 'skipped')
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
+      needs.detect.outputs.apps == 'true' &&
+      (needs.dev_gke.result == 'success' || needs.dev_gke.result == 'skipped')
     uses: ./.github/workflows/_layer.yml
-    with: { layer_dir: 04-apps }
+    with:
+      layer_dir: 04-apps
+      env: dev
+      environment_name: dev
+      wif_provider: ${{ vars.WIF_PROVIDER_DEV }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_DEV }}
+    secrets: inherit
+
+  # ═══════════════════════════════════════════════════════════
+  #  TEST 环境:PR 时 plan-only;push main 时自动部署(轻量审批)
+  # ═══════════════════════════════════════════════════════════
+  test_network:
+    needs: detect
+    if: |
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.network == 'true'
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 01-network
+      env: test
+      environment_name: test
+      wif_provider: ${{ vars.WIF_PROVIDER_TEST }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_TEST }}
+    secrets: inherit
+
+  test_db:
+    needs: [detect, test_network]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.db == 'true' &&
+      (needs.test_network.result == 'success' || needs.test_network.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 02-core-db
+      env: test
+      environment_name: test
+      wif_provider: ${{ vars.WIF_PROVIDER_TEST }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_TEST }}
+    secrets: inherit
+
+  test_gke:
+    needs: [detect, test_db]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.gke == 'true' &&
+      (needs.test_db.result == 'success' || needs.test_db.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 03-gke-platform
+      env: test
+      environment_name: test
+      wif_provider: ${{ vars.WIF_PROVIDER_TEST }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_TEST }}
+    secrets: inherit
+
+  test_apps:
+    needs: [detect, test_gke]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.apps == 'true' &&
+      (needs.test_gke.result == 'success' || needs.test_gke.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 04-apps
+      env: test
+      environment_name: test
+      wif_provider: ${{ vars.WIF_PROVIDER_TEST }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_TEST }}
+    secrets: inherit
+
+  # 晋升门:Test 全部层未失败,才允许进入 Prod
+  test_complete:
+    needs: [test_network, test_db, test_gke, test_apps]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.test_network.result != 'failure' &&
+      needs.test_db.result != 'failure' &&
+      needs.test_gke.result != 'failure' &&
+      needs.test_apps.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Test 环境全部层通过,允许晋升 Prod。"
+
+  # ═══════════════════════════════════════════════════════════
+  #  PROD 环境:必须 Test 通过后;push main 时严格审批部署
+  # ═══════════════════════════════════════════════════════════
+  prod_network:
+    needs: [detect, test_complete]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.network == 'true' &&
+      needs.test_complete.result == 'success'
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 01-network
+      env: prod
+      environment_name: production-apply
+      wif_provider: ${{ vars.WIF_PROVIDER_PROD }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_PROD }}
+    secrets: inherit
+
+  prod_db:
+    needs: [detect, test_complete, prod_network]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.db == 'true' &&
+      needs.test_complete.result == 'success' &&
+      (needs.prod_network.result == 'success' || needs.prod_network.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 02-core-db
+      env: prod
+      environment_name: production-apply
+      wif_provider: ${{ vars.WIF_PROVIDER_PROD }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_PROD }}
+    secrets: inherit
+
+  prod_gke:
+    needs: [detect, test_complete, prod_db]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.gke == 'true' &&
+      needs.test_complete.result == 'success' &&
+      (needs.prod_db.result == 'success' || needs.prod_db.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 03-gke-platform
+      env: prod
+      environment_name: production-apply
+      wif_provider: ${{ vars.WIF_PROVIDER_PROD }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_PROD }}
+    secrets: inherit
+
+  prod_apps:
+    needs: [detect, test_complete, prod_gke]
+    if: |
+      always() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+      needs.detect.outputs.apps == 'true' &&
+      needs.test_complete.result == 'success' &&
+      (needs.prod_gke.result == 'success' || needs.prod_gke.result == 'skipped')
+    uses: ./.github/workflows/_layer.yml
+    with:
+      layer_dir: 04-apps
+      env: prod
+      environment_name: production-apply
+      wif_provider: ${{ vars.WIF_PROVIDER_PROD }}
+      sa_email: ${{ vars.GCP_SA_EMAIL_PROD }}
     secrets: inherit

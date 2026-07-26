@@ -9,7 +9,29 @@ import data.lib
 #   deny  → 硬红线,违规即阻断合并(金融级不可妥协项)
 #   warn  → 建议项,不阻断,提示改进(advisory,给团队缓冲)
 # 每条规则带 POLICY / RATIONALE / OWNER 注释头,便于审计与交接。
+#
+# 环境感知(policy-as-data):
+#   CI 用 `conftest test ... -d opa-data/<env>.json` 注入环境合规级别。
+#   dev 环境可豁免 HA / deletion_protection(见 opa-data/dev.json)。
+#   安全默认:未提供数据文件时,一律按强制处理(default enforce = true)。
 # =====================================================================
+
+# 仅当环境数据文件显式设为 false 才豁免;否则默认强制。
+ha_enforced if {
+	not ha_exempted
+}
+
+ha_exempted if {
+	data.envcfg.enforce_ha == false
+}
+
+deletion_protection_enforced if {
+	not deletion_protection_exempted
+}
+
+deletion_protection_exempted if {
+	data.envcfg.enforce_deletion_protection == false
+}
 
 # ---------------------------------------------------------------------
 # POLICY:     sql-high-availability
@@ -19,6 +41,7 @@ import data.lib
 # EXCEPTIONS: 无
 # ---------------------------------------------------------------------
 deny contains msg if {
+	ha_enforced
 	some r in lib.resources_of_type(input, "google_sql_database_instance")
 	r.change.after.settings.availability_type != "REGIONAL"
 	msg := sprintf("[deny] Cloud SQL %v 必须为 REGIONAL 高可用(当前非 REGIONAL)", [r.address])
@@ -32,6 +55,7 @@ deny contains msg if {
 # EXCEPTIONS: 无
 # ---------------------------------------------------------------------
 deny contains msg if {
+	deletion_protection_enforced
 	some r in lib.resources_of_type(input, "google_sql_database_instance")
 	r.change.after.deletion_protection != true
 	msg := sprintf("[deny] Cloud SQL %v 必须开启 deletion_protection", [r.address])

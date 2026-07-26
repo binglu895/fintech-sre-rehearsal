@@ -1,0 +1,7 @@
+{
+  "envcfg": {
+    "_comment": "Dev 环境合规豁免:允许 ZONAL 单点、关删除保护(便于反复演练)。no-public-ip 始终强制,不可豁免。",
+    "enforce_ha": false,
+    "enforce_deletion_protection": false
+  }
+}
