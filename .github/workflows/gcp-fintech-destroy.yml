@@ -91,7 +91,22 @@ jobs:
                 -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
                 -var="deletion_protection=false"
             fi
-            terraform plan -destroy -var-file="$GITHUB_WORKSPACE/envs/$ENVN/$L.tfvars" -out=destroy.tfout
-            terraform apply -auto-approve destroy.tfout
-            echo "==================== 完成 $L ===================="
+            # 重试:PSA(私有服务连接)在 Cloud SQL 删除后有释放延迟,
+            # 首次 destroy 常报 "Producer services still using this connection"。
+            # 失败则等 90s 重新 plan-destroy 再试,自动扛过传播延迟。
+            ATTEMPTS=4
+            for i in $(seq 1 $ATTEMPTS); do
+              terraform plan -destroy -var-file="$GITHUB_WORKSPACE/envs/$ENVN/$L.tfvars" -out=destroy.tfout
+              if terraform apply -auto-approve destroy.tfout; then
+                echo "==================== 完成 $L ===================="
+                break
+              fi
+              if [ "$i" -lt "$ATTEMPTS" ]; then
+                echo "::warning::[$ENVN] $L 销毁第 $i 次失败(可能 PSA 释放延迟),90s 后重试..."
+                sleep 90
+              else
+                echo "::error::[$ENVN] $L 销毁 $ATTEMPTS 次仍失败"
+                exit 1
+              fi
+            done
           done
