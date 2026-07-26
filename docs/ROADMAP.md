@@ -58,6 +58,10 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 - B8【P3】staging 环境扩展 demo
 - B9【P1】应用连 Cloud SQL：Secret Manager + Workload Identity（A3 配套）
 - B10【P3】workflow_dispatch 输入定义需同步 main 才在 UI 生效（流程约定，或研究 Terraform Stacks/Terragrunt 迁移消除 greenfield 尖角）
+- **B11【P2】destroy 的 PSA 拆除健壮化** —— 见下方"已知坑"。Cloud SQL 删除后 PSA 连接释放慢（20-30min+），
+  `terraform destroy 01-network` 报 `Producer services still using this connection`，无强制手段。
+  改进方向：① destroy 失败时自动 fallback 到 `gcloud compute networks peerings delete` 强删底层 peering；
+  ② 或把 servicenetworking connection 移出 terraform（out-of-band 管理）；③ 或加带耐心的重试。
 
 ---
 
@@ -152,3 +156,36 @@ A3 Bank of Anthos 落地(前置)
 - 日常层代码/逻辑迭代可留 develop，靠 PR 的 test/prod plan 兜底。
 - 只改要测的层 → detect 只跑那层 → 增量更新，别每次 ALL 重建。
 - 演练用完即毁：`gcp-fintech-destroy` env=<env> layer=ALL confirm=DESTROY。
+
+---
+
+## 六、已知坑 & Runbook
+
+### PSA 拆除卡死（destroy 01-network 报 "Producer services still using this connection"）
+
+**现象**：destroy 时 GKE/SQL 都删成功，卡在 `01-network` 的 `google_service_networking_connection`。
+即使 Cloud SQL 已删，GCP 后端释放 PSA 连接需 20-30min+，期间 servicenetworking 一直标记"in use"，无强制删除手段。
+
+**手动强删 runbook（已验证有效）**——直接删底层 compute VPC peering，绕过 servicenetworking 的 in-use 检查：
+
+```bash
+PROJECT=kqeardr-gcp-shimano-internal
+ENV=test   # 或 dev
+
+# 0. 先确认 SQL 已删(安全前提)
+gcloud sql instances list --project=$PROJECT --filter="name~ledger-db-$ENV"
+
+# 1. 直接删 VPC peering(绕过 in-use 检查)
+gcloud compute networks peerings delete servicenetworking-googleapis-com \
+  --network=fintech-$ENV-vpc --project=$PROJECT
+
+# 2. 删保留的 PSA 全局地址
+gcloud compute addresses delete fintech-$ENV-psa-range --global --project=$PROJECT
+
+# 3. 删 VPC
+gcloud compute networks delete fintech-$ENV-vpc --project=$PROJECT
+
+# 4.(可选)重跑 destroy 01-network 对账清空 stale state
+```
+
+**改进项**：见 backlog B11。

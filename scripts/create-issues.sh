@@ -120,6 +120,14 @@ mk "[P3] workflow_dispatch 输入需同步 main 才在 UI 生效" "enhancement,P
 **选项**:① 约定'workflow 输入改动及时同步 main';② 研究 Terraform Stacks/Terragrunt 迁移,
 顺带消除分层 remote_state 的 greenfield 尖角。参见 docs/ROADMAP.md。"
 
+mk "[P2] destroy 的 PSA 拆除健壮化" "enhancement,P2" \
+"**问题**:Cloud SQL 删除后 PSA(servicenetworking connection)释放慢(20-30min+),
+destroy 01-network 报 'Producer services still using this connection',无强制删除手段。
+**已验证手动解法**:直接删底层 compute VPC peering(绕过 in-use 检查)+ 全局地址 + VPC。
+详见 docs/ROADMAP.md 第六节 Runbook。
+**改进方向**:① destroy 失败时自动 fallback 到 gcloud compute peering 强删;
+② 或把 servicenetworking connection 移出 terraform(out-of-band 管理);③ 或加带耐心的重试。"
+
 mk "[P1] PR 自动评论 terraform plan 结果" "enhancement,P1" \
 "**目标**:在 PR 页面自动评论各层 terraform plan 摘要(要创建/变更什么),方便审批与审计。
 金融合规常见做法。可用 actions/github-script 或 terraform show 输出贴评论。"
