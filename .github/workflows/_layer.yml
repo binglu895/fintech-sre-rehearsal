@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.guard.outputs.skip }}   # greenfield 跳过标记,传给 apply job
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache   # provider 缓存目录
     defaults:
       run:
         working-directory: ${{ inputs.layer_dir }}
@@ -30,6 +32,17 @@ jobs:
           service_account: ${{ inputs.sa_email }}
 
       - uses: hashicorp/setup-terraform@v3
+
+      # 缓存 terraform provider,省掉每次 init 重新下载(GKE/SQL 创建时间省不了,但 init 快很多)
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        working-directory: ${{ github.workspace }}
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       # ── Greenfield 守卫 ──
       # 消费上游 remote_state 的层(02/03),若上游 network 尚未部署(无输出)则跳过本层 plan。
@@ -114,6 +127,8 @@ jobs:
     if: github.event_name == 'push' && needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}   # ← 该环境配 Required reviewers 等保护规则
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
     defaults:
       run:
         working-directory: ${{ inputs.layer_dir }}
@@ -127,6 +142,16 @@ jobs:
           service_account: ${{ inputs.sa_email }}
 
       - uses: hashicorp/setup-terraform@v3
+
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        working-directory: ${{ github.workspace }}
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       - name: 下载 plan 产物
         uses: actions/download-artifact@v4

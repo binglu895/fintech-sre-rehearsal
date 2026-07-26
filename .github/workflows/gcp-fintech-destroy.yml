@@ -36,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     # 按环境绑定审批门:dev 用 dev 环境(可无审批),test/prod 用各自审批环境
     environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
     steps:
       # 先 checkout,保证后续步骤有代码和目录
       - uses: actions/checkout@v4
@@ -56,6 +58,15 @@ jobs:
           service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
 
       - uses: hashicorp/setup-terraform@v3
+
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       - name: terraform init
         working-directory: ${{ inputs.layer }}
