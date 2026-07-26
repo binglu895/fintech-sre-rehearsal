@@ -119,17 +119,24 @@ else
   echo "  ✓ Pool $POOL_ID"
 fi
 
+ATTR_MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref"
 if gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
      --project="$PROJECT" --location=global \
      --workload-identity-pool="$POOL_ID" >/dev/null 2>&1; then
-  echo "  Provider $PROVIDER_ID 已存在"
+  echo "  Provider $PROVIDER_ID 已存在 → 更新属性映射(确保含 attribute.ref)"
+  # 幂等修复:已存在的 provider 可能缺 attribute.ref 映射,导致 ref 级绑定失效。
+  gcloud iam workload-identity-pools providers update-oidc "$PROVIDER_ID" \
+    --project="$PROJECT" --location=global \
+    --workload-identity-pool="$POOL_ID" \
+    --attribute-mapping="$ATTR_MAPPING" >/dev/null
+  echo "  ✓ 已更新 attribute-mapping"
 else
   gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_ID" \
     --project="$PROJECT" --location=global \
     --workload-identity-pool="$POOL_ID" \
     --display-name="GitHub OIDC" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
-    --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+    --attribute-mapping="$ATTR_MAPPING" \
     --attribute-condition="assertion.repository=='$REPO'"
   echo "  ✓ Provider $PROVIDER_ID (仅信任仓库 $REPO)"
 fi
