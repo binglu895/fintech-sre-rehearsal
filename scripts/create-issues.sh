@@ -110,6 +110,16 @@ mkdone "[已完成] Terraform provider 缓存提速" "enhancement" \
 TF_PLUGIN_CACHE_DIR,省掉每次 init 重新下载 provider。key 按 provider.tf 哈希失效。
 GKE/SQL 云侧创建时间省不了,但每层 init 快 30-60s。提交:501331d"
 
+mkdone "[已完成] apply/destroy 支持 ALL 一键批量" "enhancement" \
+"**成果**:手动 apply(正序 01→02→03→04)、destroy(逆序 04→03→02→01)均加 ALL 选项,
+一次运行批量处理全部层。destroy ALL 在循环内自动先关 02 的 deletion_protection。提交:2781f8d"
+
+mk "[P3] workflow_dispatch 输入需同步 main 才在 UI 生效" "enhancement,P3" \
+"**问题**:apply/destroy 的 env/layer 等输入选项,Run workflow 表单认默认分支(main)。
+改在 develop 上不会立即在 UI 出现,需合并到 main。
+**选项**:① 约定'workflow 输入改动及时同步 main';② 研究 Terraform Stacks/Terragrunt 迁移,
+顺带消除分层 remote_state 的 greenfield 尖角。参见 docs/ROADMAP.md。"
+
 mk "[P1] PR 自动评论 terraform plan 结果" "enhancement,P1" \
 "**目标**:在 PR 页面自动评论各层 terraform plan 摘要(要创建/变更什么),方便审批与审计。
 金融合规常见做法。可用 actions/github-script 或 terraform show 输出贴评论。"
