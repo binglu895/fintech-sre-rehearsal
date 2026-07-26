@@ -17,7 +17,20 @@ set -euo pipefail
 
 # ── 参数(可用环境变量覆盖)──
 PROJECT="${PROJECT:-kqeardr-gcp-shimano-internal}"
-REPO="${REPO:?请设置 REPO=<org>/<repo>,例如 binglu895/fintech-sre-rehearsal}"
+
+# REPO 未显式设置时,尝试从 git remote 自动探测(git@github.com:org/repo.git 或 https)
+REPO="${REPO:-}"
+if [ -z "$REPO" ]; then
+  ORIGIN="$(git config --get remote.origin.url 2>/dev/null || true)"
+  # 先去掉结尾的 .git,再取 <org>/<repo>
+  REPO="$(printf '%s' "$ORIGIN" | sed -E 's#\.git$##' | sed -E 's#.*[:/]([^/]+/[^/]+)$#\1#')"
+fi
+if [ -z "$REPO" ]; then
+  echo "✗ 未能确定 REPO。请显式指定,例如:" >&2
+  echo "    REPO=binglu895/fintech-sre-rehearsal ./scripts/bootstrap.sh" >&2
+  exit 1
+fi
+
 REGION="${REGION:-asia-northeast1}"
 POOL_ID="${POOL_ID:-github-pool}"
 PROVIDER_ID="${PROVIDER_ID:-github-provider}"
