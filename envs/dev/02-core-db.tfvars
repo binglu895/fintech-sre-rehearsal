@@ -6,6 +6,8 @@ project_id   = "kqeardr-gcp-shimano-internal"
 region       = "asia-northeast1"
 state_bucket = "fintech-iac-states-dev"
 
-tier                = "db-f1-micro" # 最便宜的共享核(ZONAL 才支持),dev 演练够用
+# 保持 db-custom-1-3840:实例已创建,改共享核会强制重建,而 Cloud SQL 删除后
+# 实例名保留约一周无法立即复用 → 会失败。此规格已是最小专用核 + ZONAL,足够省。
+tier                = "db-custom-1-3840"
 availability_type   = "ZONAL"
 deletion_protection = false

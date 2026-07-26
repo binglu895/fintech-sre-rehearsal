@@ -23,7 +23,12 @@ module "gke" {
   project_id = var.project_id
   name       = "${local.name_prefix}-gke"
   region     = var.region
-  regional   = true
+  regional   = var.regional
+  zones      = var.zones
+
+  # 复用现有 SA 作节点身份,避免模块新建 SA(需 iam.serviceAccounts.create)
+  create_service_account = false
+  service_account        = var.node_service_account
 
   # 挂 01-network 的网络(名称从 remote_state 读取,已带 env 前缀)
   network           = data.terraform_remote_state.network.outputs.network_name
@@ -46,7 +51,7 @@ module "gke" {
       machine_type = var.machine_type
       min_count    = var.min_count
       max_count    = var.max_count
-      disk_size_gb = 50
+      disk_size_gb = var.disk_size_gb
       disk_type    = "pd-standard"
       auto_repair  = true
       auto_upgrade = true
