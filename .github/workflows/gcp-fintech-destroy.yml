@@ -14,10 +14,12 @@ on:
           - test
           - prod
       layer:
-        description: "要销毁的层(逆序:apps→gke→db→network)"
+        description: "销毁范围(ALL=逆序 04→03→02→01 一次删完;或选单层)"
         required: true
+        default: ALL
         type: choice
         options:
+          - ALL
           - 04-apps
           - 03-gke-platform
           - 02-core-db
@@ -49,7 +51,7 @@ jobs:
             echo "确认词错误(应为 DESTROY),已中止。输入的是:${{ inputs.confirm }}"
             exit 1
           fi
-          echo "确认词通过,准备销毁 [${{ inputs.env }}] ${{ inputs.layer }}"
+          echo "确认词通过,准备销毁 [${{ inputs.env }}] 范围=${{ inputs.layer }}"
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -68,20 +70,28 @@ jobs:
       - name: 准备缓存目录
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-      - name: terraform init
-        working-directory: ${{ inputs.layer }}
-        run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.backend.hcl
-
-      # 02-core-db 若开了 deletion_protection,须先关闭才能删
-      - name: 关闭删除保护(仅 02-core-db)
-        if: inputs.layer == '02-core-db'
-        working-directory: ${{ inputs.layer }}
-        run: terraform apply -auto-approve -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/02-core-db.tfvars -var="deletion_protection=false"
-
-      - name: 销毁计划(先看要删什么)
-        working-directory: ${{ inputs.layer }}
-        run: terraform plan -destroy -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.tfvars -out=destroy.tfout
-
-      - name: 执行销毁
-        working-directory: ${{ inputs.layer }}
-        run: terraform apply -auto-approve destroy.tfout
+      - name: 按逆序销毁(init → [关删除保护] → plan-destroy → apply)
+        env:
+          ENVN: ${{ inputs.env }}
+          LAYER: ${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          if [ "$LAYER" = "ALL" ]; then
+            LAYERS="04-apps 03-gke-platform 02-core-db 01-network"   # 逆序:先删下游
+          else
+            LAYERS="$LAYER"
+          fi
+          for L in $LAYERS; do
+            echo "==================== 销毁 [$ENVN] $L ===================="
+            cd "$GITHUB_WORKSPACE/$L"
+            terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/$L.backend.hcl"
+            # 02-core-db 若开了 deletion_protection,须先关闭才能删
+            if [ "$L" = "02-core-db" ]; then
+              terraform apply -auto-approve \
+                -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
+                -var="deletion_protection=false"
+            fi
+            terraform plan -destroy -var-file="$GITHUB_WORKSPACE/envs/$ENVN/$L.tfvars" -out=destroy.tfout
+            terraform apply -auto-approve destroy.tfout
+            echo "==================== 完成 $L ===================="
+          done
