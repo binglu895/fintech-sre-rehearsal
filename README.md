@@ -25,6 +25,41 @@ GitHub + GCP + GitHub Actions + 4 层解耦 + **三环境(dev / test / prod)晋�
 └── _opa-test/                  # OPA 自测样本
 ```
 
+## 流程图(分支 → 环境 晋升链)
+
+```mermaid
+flowchart TD
+    subgraph DEV["🔵 Dev · push develop(自动·OPA宽松)"]
+        d1[detect<br/>变更层] --> d2[plan<br/>SA_DEV·envs/dev] --> d3[OPA 宽松<br/>opa-data/dev.json] --> d4[apply<br/>01→02→03→04] --> d5[(fintech-dev-*<br/>10.0/16·states-dev)]
+    end
+
+    subgraph PR["🟣 PR → main(plan-only·不部署)"]
+        p1[plan × Test 配置] --> p3[OPA 严格 + Checkov]
+        p2[plan × Prod 配置] --> p3
+        p3 --> p4{Required Checks<br/>+ 人工 Review}
+    end
+
+    subgraph TEST["🟡 Test · push main(自动·1人审批·OPA严格)"]
+        t1[plan<br/>SA_TEST·envs/test] --> t2[OPA 严格<br/>opa-data/test.json] --> t3{Env: test<br/>reviewer×1} --> t4[apply] --> t5[(fintech-test-*<br/>10.16/16·REGIONAL)]
+    end
+
+    subgraph PROD["🟢 Prod · push main · needs test_complete"]
+        pr1{晋升门<br/>test_complete==success} --> pr2[plan<br/>SA_PROD·envs/prod] --> pr3[OPA 严格<br/>opa-data/prod.json] --> pr4{Env: production-apply<br/>SRE审批+Wait 5min} --> pr5[apply<br/>下载已审plan] --> pr6[(fintech-prod-*<br/>10.32/16·REGIONAL·大规格)]
+    end
+
+    DEV -. "验证后发起 PR" .-> PR
+    PR == "Merge 到 main" ==> TEST
+    TEST == "test 全层通过" ==> PROD
+
+    classDef gcp fill:#ecfdf5,stroke:#6ee7b7
+    classDef gate fill:#fce7f3,stroke:#f9a8d4
+    class d5,t5,pr6 gcp
+    class p4,t3,pr1,pr4 gate
+```
+
+**四道安全防线**:① paths-filter 只跑变更层 → ② OPA `deny` 硬红线(环境感知,`deny`→exit1 阻断) → ③ Checkov 软扫描 → ④ Environment 人工审批。
+同一个 commit 依次经过 Test→Prod,保证"测的就是要部署的"。
+
 ## 三环境模型
 | | dev | test | prod |
 |--|-----|------|------|
