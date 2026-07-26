@@ -26,7 +26,12 @@
 
 ## 二、GCP 侧要创建的资源(需要你执行)
 
-以下 gcloud 命令为参考模板,请按实际项目/组织调整。**请你自行执行**(涉及 IAM 授权)。
+> **一键脚本(推荐)**:已封装为幂等脚本 [`scripts/bootstrap.sh`](../scripts/bootstrap.sh),
+> 自动完成本节全部步骤(桶 / SA / 角色 / WIF / 绑定)并打印要填入 GitHub 的变量值:
+> ```bash
+> PROJECT=kqeardr-gcp-shimano-internal REPO=<org>/<repo> ./scripts/bootstrap.sh
+> ```
+> 下面是脚本内各步骤的等价 gcloud 命令(供理解 / 手动执行)。**涉及 IAM 授权,请你自行运行。**
 
 ### 1. 三个 State 桶
 
