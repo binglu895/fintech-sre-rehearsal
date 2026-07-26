@@ -5,13 +5,26 @@ name: gcp-fintech-iac
 #   push develop      → 部署 Dev(沙箱,自动,OPA 宽松)
 #   pull_request→main → 对 Test + Prod 两套配置跑 plan/OPA(只验证不部署)
 #   push main         → 部署 Test(自动,轻量审批)→ 通过后 部署 Prod(严格审批)
-# 同一个 commit 依次经过 Test→Prod,保证"测的就是要部署的",满足审计。
+#
+# 手动重建(workflow_dispatch):
+#   Actions → Run workflow → 选 env(dev/test/prod)→ 强制重建该环境全部层,
+#   无需改文件、无需翻旧运行。销毁后重建 dev 就点一下即可。
 # ─────────────────────────────────────────────────────────────
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "手动重建的环境:dev / test / prod(按序重建该环境全部层)"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
 
 permissions:
   id-token: write
@@ -19,18 +32,19 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ── 路径侦测:哪些层有变更 ──
+  # ── 路径侦测:哪些层有变更(手动触发时强制全部为 true)──
   detect:
     runs-on: ubuntu-latest
     outputs:
-      network: ${{ steps.f.outputs.network }}
-      db:      ${{ steps.f.outputs.db }}
-      gke:     ${{ steps.f.outputs.gke }}
-      apps:    ${{ steps.f.outputs.apps }}
+      network: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.f.outputs.network }}
+      db:      ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.f.outputs.db }}
+      gke:     ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.f.outputs.gke }}
+      apps:    ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.f.outputs.apps }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: f
+        if: github.event_name != 'workflow_dispatch'
         with:
           filters: |
             network: ['01-network/**', 'envs/**/01-network.*', 'policies/**', 'opa-data/**']
@@ -39,11 +53,15 @@ jobs:
             apps:    ['04-apps/**', 'envs/**/04-apps.*']
 
   # ═══════════════════════════════════════════════════════════
-  #  DEV 环境:仅 push develop 时部署(沙箱,自动,无审批)
+  #  DEV 环境:push develop 自动 / workflow_dispatch(env=dev)手动重建
   # ═══════════════════════════════════════════════════════════
   dev_network:
     needs: detect
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && needs.detect.outputs.network == 'true'
+    if: |
+      needs.detect.outputs.network == 'true' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'dev')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 01-network
@@ -56,9 +74,11 @@ jobs:
   dev_db:
     needs: [detect, dev_network]
     if: |
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
-      needs.detect.outputs.db == 'true' &&
-      (needs.dev_network.result == 'success' || needs.dev_network.result == 'skipped')
+      always() && needs.detect.outputs.db == 'true' &&
+      (needs.dev_network.result == 'success' || needs.dev_network.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'dev')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 02-core-db
@@ -71,9 +91,11 @@ jobs:
   dev_gke:
     needs: [detect, dev_db]
     if: |
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
-      needs.detect.outputs.gke == 'true' &&
-      (needs.dev_db.result == 'success' || needs.dev_db.result == 'skipped')
+      always() && needs.detect.outputs.gke == 'true' &&
+      (needs.dev_db.result == 'success' || needs.dev_db.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'dev')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 03-gke-platform
@@ -86,9 +108,11 @@ jobs:
   dev_apps:
     needs: [detect, dev_gke]
     if: |
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/develop' &&
-      needs.detect.outputs.apps == 'true' &&
-      (needs.dev_gke.result == 'success' || needs.dev_gke.result == 'skipped')
+      always() && needs.detect.outputs.apps == 'true' &&
+      (needs.dev_gke.result == 'success' || needs.dev_gke.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'dev')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 04-apps
@@ -99,13 +123,16 @@ jobs:
     secrets: inherit
 
   # ═══════════════════════════════════════════════════════════
-  #  TEST 环境:PR 时 plan-only;push main 时自动部署(轻量审批)
+  #  TEST 环境:PR plan-only / push main 自动 / dispatch(env=test)手动
   # ═══════════════════════════════════════════════════════════
   test_network:
     needs: detect
     if: |
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.network == 'true'
+      needs.detect.outputs.network == 'true' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'test')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 01-network
@@ -118,10 +145,12 @@ jobs:
   test_db:
     needs: [detect, test_network]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.db == 'true' &&
-      (needs.test_network.result == 'success' || needs.test_network.result == 'skipped')
+      always() && needs.detect.outputs.db == 'true' &&
+      (needs.test_network.result == 'success' || needs.test_network.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'test')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 02-core-db
@@ -134,10 +163,12 @@ jobs:
   test_gke:
     needs: [detect, test_db]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.gke == 'true' &&
-      (needs.test_db.result == 'success' || needs.test_db.result == 'skipped')
+      always() && needs.detect.outputs.gke == 'true' &&
+      (needs.test_db.result == 'success' || needs.test_db.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'test')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 03-gke-platform
@@ -150,10 +181,12 @@ jobs:
   test_apps:
     needs: [detect, test_gke]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.apps == 'true' &&
-      (needs.test_gke.result == 'success' || needs.test_gke.result == 'skipped')
+      always() && needs.detect.outputs.apps == 'true' &&
+      (needs.test_gke.result == 'success' || needs.test_gke.result == 'skipped') && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'test')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 04-apps
@@ -163,7 +196,7 @@ jobs:
       sa_email: ${{ vars.GCP_SA_EMAIL_TEST }}
     secrets: inherit
 
-  # 晋升门:Test 全部层未失败,才允许进入 Prod
+  # 晋升门:Test 全部层未失败,才允许进入 Prod(仅 push main / PR 晋升链需要)
   test_complete:
     needs: [test_network, test_db, test_gke, test_apps]
     if: |
@@ -178,15 +211,18 @@ jobs:
       - run: echo "Test 环境全部层通过,允许晋升 Prod。"
 
   # ═══════════════════════════════════════════════════════════
-  #  PROD 环境:必须 Test 通过后;push main 时严格审批部署
+  #  PROD 环境:push main 需 Test 通过 / dispatch(env=prod)直接重建(仍需审批)
   # ═══════════════════════════════════════════════════════════
   prod_network:
     needs: [detect, test_complete]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.network == 'true' &&
-      needs.test_complete.result == 'success'
+      always() && needs.detect.outputs.network == 'true' && (
+        (
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+          needs.test_complete.result == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'prod')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 01-network
@@ -199,11 +235,14 @@ jobs:
   prod_db:
     needs: [detect, test_complete, prod_network]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.db == 'true' &&
-      needs.test_complete.result == 'success' &&
-      (needs.prod_network.result == 'success' || needs.prod_network.result == 'skipped')
+      always() && needs.detect.outputs.db == 'true' &&
+      (needs.prod_network.result == 'success' || needs.prod_network.result == 'skipped') && (
+        (
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+          needs.test_complete.result == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'prod')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 02-core-db
@@ -216,11 +255,14 @@ jobs:
   prod_gke:
     needs: [detect, test_complete, prod_db]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.gke == 'true' &&
-      needs.test_complete.result == 'success' &&
-      (needs.prod_db.result == 'success' || needs.prod_db.result == 'skipped')
+      always() && needs.detect.outputs.gke == 'true' &&
+      (needs.prod_db.result == 'success' || needs.prod_db.result == 'skipped') && (
+        (
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+          needs.test_complete.result == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'prod')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 03-gke-platform
@@ -233,11 +275,14 @@ jobs:
   prod_apps:
     needs: [detect, test_complete, prod_gke]
     if: |
-      always() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
-      needs.detect.outputs.apps == 'true' &&
-      needs.test_complete.result == 'success' &&
-      (needs.prod_gke.result == 'success' || needs.prod_gke.result == 'skipped')
+      always() && needs.detect.outputs.apps == 'true' &&
+      (needs.prod_gke.result == 'success' || needs.prod_gke.result == 'skipped') && (
+        (
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') &&
+          needs.test_complete.result == 'success'
+        ) ||
+        (github.event_name == 'workflow_dispatch' && inputs.env == 'prod')
+      )
     uses: ./.github/workflows/_layer.yml
     with:
       layer_dir: 04-apps

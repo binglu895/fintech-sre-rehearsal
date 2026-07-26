@@ -66,7 +66,7 @@ jobs:
 
       # 保存审过的 plan,apply job 复用(保证 apply 的正是被审过的那份)
       - name: 上传 plan 产物
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ inputs.env }}-${{ inputs.layer_dir }}
@@ -76,8 +76,8 @@ jobs:
   # ── Job 2:apply,绑定环境审批门 → 执行前暂停等人工 Approve ──
   apply:
     needs: plan
-    # PR 阶段只到 plan/OPA;push 才 apply(dev=push develop / test·prod=push main,由 caller 控制)
-    if: github.event_name == 'push'
+    # PR 阶段只到 plan/OPA;push 或 手动触发 才 apply(具体哪个环境由 caller 控制)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}   # ← 该环境配 Required reviewers 等保护规则
     defaults:
