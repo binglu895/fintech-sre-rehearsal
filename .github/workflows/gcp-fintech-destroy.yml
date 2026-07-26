@@ -1,10 +1,18 @@
 name: gcp-fintech-destroy
 
-# 手动触发:Actions 页面点 "Run workflow",选择要销毁的层并输入确认词。
+# 手动触发:Actions 页面点 "Run workflow",选择环境 + 要销毁的层 + 输入确认词。
 # 依赖逆序销毁:先 04-apps → 03-gke-platform → 02-core-db → 01-network。
 on:
   workflow_dispatch:
     inputs:
+      env:
+        description: "环境:dev / test / prod"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
       layer:
         description: "要销毁的层(逆序:apps→gke→db→network)"
         required: true
@@ -26,7 +34,8 @@ permissions:
 jobs:
   destroy:
     runs-on: ubuntu-latest
-    environment: production-apply   # 复用审批环境:destroy 前也需人工 Approve
+    # 按环境绑定审批门:dev 用 dev 环境(可无审批),test/prod 用各自审批环境
+    environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
     steps:
       # 先 checkout,保证后续步骤有代码和目录
       - uses: actions/checkout@v4
@@ -38,29 +47,29 @@ jobs:
             echo "确认词错误(应为 DESTROY),已中止。输入的是:${{ inputs.confirm }}"
             exit 1
           fi
-          echo "确认词通过,准备销毁 ${{ inputs.layer }}"
+          echo "确认词通过,准备销毁 [${{ inputs.env }}] ${{ inputs.layer }}"
 
       - id: auth
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SA_EMAIL }}
+          workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+          service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
 
       - uses: hashicorp/setup-terraform@v3
 
       - name: terraform init
         working-directory: ${{ inputs.layer }}
-        run: terraform init
+        run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.backend.hcl
 
-      # 02-core-db 的 SQL 开了 deletion_protection,须先关闭才能删
+      # 02-core-db 若开了 deletion_protection,须先关闭才能删
       - name: 关闭删除保护(仅 02-core-db)
         if: inputs.layer == '02-core-db'
         working-directory: ${{ inputs.layer }}
-        run: terraform apply -auto-approve -var="deletion_protection=false"
+        run: terraform apply -auto-approve -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/02-core-db.tfvars -var="deletion_protection=false"
 
       - name: 销毁计划(先看要删什么)
         working-directory: ${{ inputs.layer }}
-        run: terraform plan -destroy -out=destroy.tfout
+        run: terraform plan -destroy -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer }}.tfvars -out=destroy.tfout
 
       - name: 执行销毁
         working-directory: ${{ inputs.layer }}
