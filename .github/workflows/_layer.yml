@@ -12,9 +12,13 @@ permissions:
   contents: read
 
 jobs:
-  # ── Job 1:认证 + plan + OPA 门禁(环境感知)+ Checkov,产出 plan 文件 ──
+  # ── Job 1:认证 + (greenfield 守卫) + plan + OPA 门禁(环境感知)+ Checkov,产出 plan 文件 ──
   plan:
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.guard.outputs.skip }}   # greenfield 跳过标记,传给 apply job
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache   # provider 缓存目录
     defaults:
       run:
         working-directory: ${{ inputs.layer_dir }}
@@ -29,7 +33,45 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
 
+      # 缓存 terraform provider,省掉每次 init 重新下载(GKE/SQL 创建时间省不了,但 init 快很多)
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        working-directory: ${{ github.workspace }}
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      # ── Greenfield 守卫 ──
+      # 消费上游 remote_state 的层(02/03),若上游 network 尚未部署(无输出)则跳过本层 plan。
+      # 原理:空环境冷启动时上游未 apply → 无输出 → 下游 plan 本就无法进行,skip 而非 fail。
+      # push 场景下上游会先 apply(needs 保证顺序),此时有输出 → 不跳过,正常 plan/apply。
+      - id: guard
+        name: Greenfield 守卫(上游未部署则跳过)
+        run: |
+          if ! grep -rq 'terraform_remote_state' .; then
+            echo "本层无上游依赖,正常 plan"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 探测上游 network 是否已部署(能读到 network_self_link 输出)
+          (
+            cd "${{ github.workspace }}/01-network"
+            terraform init -backend-config="${{ github.workspace }}/envs/${{ inputs.env }}/01-network.backend.hcl" -input=false >/dev/null 2>&1 || true
+            terraform output -raw network_self_link >/dev/null 2>&1
+          ) && FOUND=1 || FOUND=0
+          if [ "$FOUND" = "1" ]; then
+            echo "上游 network 已部署,正常 plan"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::[${{ inputs.env }}] ${{ inputs.layer_dir }}:上游 network 尚未部署(greenfield),跳过本层 plan"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 安装 conftest
+        if: steps.guard.outputs.skip != 'true'
         run: |
           CONFTEST_VERSION=0.68.2
           curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
@@ -39,16 +81,20 @@ jobs:
 
       # backend 与变量按环境注入(同一份代码,三环境独立 state + 独立参数)
       - name: terraform init
+        if: steps.guard.outputs.skip != 'true'
         run: terraform init -backend-config=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer_dir }}.backend.hcl
 
       - name: terraform plan
+        if: steps.guard.outputs.skip != 'true'
         run: terraform plan -var-file=${{ github.workspace }}/envs/${{ inputs.env }}/${{ inputs.layer_dir }}.tfvars -out=plan.tfout
 
       - name: terraform show → json
+        if: steps.guard.outputs.skip != 'true'
         run: terraform show -json plan.tfout > plan.json
 
       # OPA:-p 加载 rego 规则,-d 注入本环境合规级别(dev 宽松 / test·prod 严格)
       - name: OPA 门禁(环境感知 deny/warn)
+        if: steps.guard.outputs.skip != 'true'
         run: |
           conftest test plan.json \
             -p ${{ github.workspace }}/policies \
@@ -56,6 +102,7 @@ jobs:
             --output table
 
       - name: Checkov 兜底扫描(soft 不阻断)
+        if: steps.guard.outputs.skip != 'true'
         continue-on-error: true
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -66,7 +113,7 @@ jobs:
 
       # 保存审过的 plan,apply job 复用(保证 apply 的正是被审过的那份)
       - name: 上传 plan 产物
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.guard.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ inputs.env }}-${{ inputs.layer_dir }}
@@ -76,10 +123,12 @@ jobs:
   # ── Job 2:apply,绑定环境审批门 → 执行前暂停等人工 Approve ──
   apply:
     needs: plan
-    # PR 阶段只到 plan/OPA;push 才 apply(dev=push develop / test·prod=push main,由 caller 控制)
-    if: github.event_name == 'push'
+    # PR 阶段只到 plan/OPA;push 才 apply。greenfield 跳过的层(skip=true)不 apply。
+    if: github.event_name == 'push' && needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}   # ← 该环境配 Required reviewers 等保护规则
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
     defaults:
       run:
         working-directory: ${{ inputs.layer_dir }}
@@ -93,6 +142,16 @@ jobs:
           service_account: ${{ inputs.sa_email }}
 
       - uses: hashicorp/setup-terraform@v3
+
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        working-directory: ${{ github.workspace }}
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       - name: 下载 plan 产物
         uses: actions/download-artifact@v4
