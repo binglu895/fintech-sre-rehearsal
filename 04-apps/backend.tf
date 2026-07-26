@@ -1,6 +1,4 @@
+# backend 留空,由 CI 用 -backend-config=envs/<env>/04-apps.backend.hcl 注入。
 terraform {
-  backend "gcs" {
-    bucket = "fintech-iac-states-prod"
-    prefix = "apps/state"
-  }
+  backend "gcs" {}
 }

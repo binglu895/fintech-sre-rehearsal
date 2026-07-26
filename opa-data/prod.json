@@ -1,0 +1,7 @@
+{
+  "envcfg": {
+    "_comment": "Prod:全部红线强制。",
+    "enforce_ha": true,
+    "enforce_deletion_protection": true
+  }
+}

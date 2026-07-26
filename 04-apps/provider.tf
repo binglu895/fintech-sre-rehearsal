@@ -8,6 +8,6 @@ terraform {
 }
 
 provider "google" {
-  project = "kqeardr-gcp-shimano-internal"
-  region  = "asia-northeast1"
+  project = var.project_id
+  region  = var.region
 }

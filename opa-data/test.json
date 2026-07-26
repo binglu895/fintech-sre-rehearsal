@@ -1,0 +1,7 @@
+{
+  "envcfg": {
+    "_comment": "Test 与 Prod 同构:全部红线强制,确保测的就是要部署的。",
+    "enforce_ha": true,
+    "enforce_deletion_protection": true
+  }
+}

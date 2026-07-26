@@ -12,8 +12,8 @@ terraform {
 }
 
 provider "google" {
-  project = "kqeardr-gcp-shimano-internal"
-  region  = "asia-northeast1"
+  project = var.project_id
+  region  = var.region
 }
 
 # private-cluster 模块的 K8s 资源需要 kubernetes provider。
