@@ -145,31 +145,23 @@ POOL_RES="projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL_
 PROVIDER_RES="$POOL_RES/providers/$PROVIDER_ID"
 echo
 
-# ── 5. 把每个 SA 绑定给 GitHub ──
+# ── 5. 把每个 SA 绑定给 GitHub(统一仓库级)──
 echo "== [5/5] 绑定 SA ← GitHub =="
-# dev 只在 push develop 部署 → 仅信任 develop 分支(最严)。
-# test/prod 需在 PR→main 阶段跑 plan(此时 OIDC ref=refs/pull/N/merge,非 main),
-#   故绑定到仓库级 principalSet,让 PR 也能拿身份跑 plan。
-#   apply 仍被三重门挡住:apply job 仅 push 触发 + caller 限 main + prod 需 Environment 审批。
-bind_ref() {  # $1=env  $2=ref(如 refs/heads/develop)
-  local e="$1" ref="$2"
-  local SA_EMAIL="sa-fintech-$e@$PROJECT.iam.gserviceaccount.com"
-  gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
-    --project="$PROJECT" --role=roles/iam.workloadIdentityUser \
-    --member="principalSet://iam.googleapis.com/$POOL_RES/attribute.ref/$ref" \
-    >/dev/null
-  echo "  ✓ sa-fintech-$e ← $ref"
-}
-bind_repo() {  # $1=env  —— 仓库级信任(覆盖 PR 事件)
+# 统一用仓库级 principalSet(attribute.repository,映射稳定、不依赖 attribute.ref):
+#   - dev:  仅 push develop 用(由 workflow 的 if 限定),仓库级绑定即可
+#   - test/prod: PR→main 阶段 ref=refs/pull/N/merge,也需仓库级才能跑 plan
+# "哪个分支能部署哪个环境" 由 workflow if + GitHub Environment 保证,不靠 WIF ref。
+# apply 仍被三重门挡住:apply job 仅 push 触发 + caller 限分支 + prod 需 Environment 审批。
+bind_repo() {  # $1=env  —— 仓库级信任
   local e="$1"
   local SA_EMAIL="sa-fintech-$e@$PROJECT.iam.gserviceaccount.com"
   gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
     --project="$PROJECT" --role=roles/iam.workloadIdentityUser \
     --member="principalSet://iam.googleapis.com/$POOL_RES/attribute.repository/$REPO" \
     >/dev/null
-  echo "  ✓ sa-fintech-$e ← repo:$REPO (含 PR)"
+  echo "  ✓ sa-fintech-$e ← repo:$REPO"
 }
-bind_ref  dev  refs/heads/develop
+bind_repo dev
 bind_repo test
 bind_repo prod
 echo
