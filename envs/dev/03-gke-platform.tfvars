@@ -7,12 +7,13 @@ state_bucket = "fintech-iac-states-dev"
 # 控制平面 /28,各环境不同,避免单项目内 peering 冲突
 master_ipv4_cidr_block = "172.16.0.0/28"
 
-# Dev 单区集群 + e2-medium。固定 3 节点(min=max)以承载 Bank of Anthos ~10 个 pod:
-# 确定性、成本可预测、无自动伸缩扰动。
-# (弹性伸缩 min<max 留到 Phase 2 专门测 autoscaler 时再开。)
+# Dev 单区集群,固定 3 节点(min=max,确定性/无伸缩扰动)。
+# 机型 e2-standard-2(2 个独占 vCPU/8GB):e2-medium 是共享核,可分配 CPU 仅 ~940m,
+# 装不下 Bank of Anthos Cloud SQL 版(每后端多了 proxy sidecar)。
+# 注意:改机型会重建节点池(pod 重新调度,Cloud SQL 数据不受影响)。
 regional             = false
 zones                = ["asia-northeast1-a"]
-machine_type         = "e2-medium"
+machine_type         = "e2-standard-2"
 min_count            = 3
 max_count            = 3
 disk_size_gb         = 30
