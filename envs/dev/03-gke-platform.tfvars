@@ -7,11 +7,12 @@ state_bucket = "fintech-iac-states-dev"
 # 控制平面 /28,各环境不同,避免单项目内 peering 冲突
 master_ipv4_cidr_block = "172.16.0.0/28"
 
-# Dev 成本最优:单区集群 + 单节点 + 小机型 + 小盘 + 复用 dev 部署 SA 作节点身份
+# Dev 单区集群 + e2-medium。Bank of Anthos ~10 个 pod,单节点装不下,
+# 提到 2-4 节点(autoscaler 按需伸缩;min=2 保证 BoA 能起)。
 regional             = false
 zones                = ["asia-northeast1-a"]
 machine_type         = "e2-medium"
-min_count            = 1
-max_count            = 1
+min_count            = 2
+max_count            = 4
 disk_size_gb         = 30
 node_service_account = "sa-fintech-dev@kqeardr-gcp-shimano-internal.iam.gserviceaccount.com"
