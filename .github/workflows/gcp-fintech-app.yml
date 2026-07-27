@@ -1,0 +1,76 @@
+name: gcp-fintech-app
+
+# 手动部署/删除 Bank of Anthos 应用层(A3)到指定环境的 GKE。
+# A3.2:先用 BoA 自带的内置 DB(in-cluster PostgreSQL)跑通。
+# A3.3(后续):再切到 02 层的 Cloud SQL(Workload Identity + Cloud SQL Proxy)。
+# 应用交付方式:kubectl + 官方 manifests(版本钉死);目标态演进到 GitOps(ArgoCD)。
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "环境:dev / test / prod"
+        required: true
+        type: choice
+        options: [dev, test, prod]
+      action:
+        description: "deploy=部署 / delete=删除"
+        required: true
+        default: deploy
+        type: choice
+        options: [deploy, delete]
+      boa_ref:
+        description: "Bank of Anthos 版本 tag(钉死可复现)"
+        required: true
+        default: v0.6.10
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    # prod 走审批门;dev/test 各自环境
+    environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+          service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+
+      # 取 GKE 凭证(自动装 gke-gcloud-auth-plugin + 写 kubeconfig)
+      # dev/test 是 zonal 集群(location=zone);prod 是 regional(location=region)
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: fintech-${{ inputs.env }}-gke
+          location: ${{ inputs.env == 'prod' && 'asia-northeast1' || 'asia-northeast1-a' }}
+
+      - name: 拉取 Bank of Anthos(版本钉死)
+        run: git clone --depth 1 --branch ${{ inputs.boa_ref }} https://github.com/GoogleCloudPlatform/bank-of-anthos.git boa
+
+      - name: ${{ inputs.action }} Bank of Anthos
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = "deploy" ]; then
+            kubectl apply -f boa/extras/jwt/jwt-secret.yaml
+            kubectl apply -f boa/kubernetes-manifests
+            echo "等待 frontend 外部 IP 分配..."
+            IP=""
+            for i in $(seq 1 30); do
+              IP=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              [ -n "$IP" ] && break
+              sleep 10
+            done
+            echo "::notice::Bank of Anthos 前端: http://${IP:-<还在分配,稍后 kubectl get svc frontend>}"
+            kubectl get pods
+          else
+            kubectl delete -f boa/kubernetes-manifests --ignore-not-found
+            kubectl delete -f boa/extras/jwt/jwt-secret.yaml --ignore-not-found
+            echo "::notice::已删除 Bank of Anthos(内置 DB 的 PVC 可能需手动清:kubectl get pvc)"
+          fi
