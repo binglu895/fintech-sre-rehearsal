@@ -166,6 +166,31 @@ bind_repo test
 bind_repo prod
 echo
 
+# ── 6. Bank of Anthos 应用身份(boa-gsa-<env> + IAM + Workload Identity)──
+# 放这里(bootstrap,特权账号)而非 04-apps terraform:per-env 部署 SA 无 IAM 管理权(防提权)。
+# KSA(default/boa-ksa)本身由应用侧(gcp-fintech-app workflow)创建并加注解。
+echo "== [6] Bank of Anthos 应用 GSA + Workload Identity =="
+boa_identity() {  # $1=env
+  local e="$1"
+  local G="boa-gsa-$e"
+  local GE="$G@$PROJECT.iam.gserviceaccount.com"
+  gcloud iam service-accounts describe "$GE" --project="$PROJECT" >/dev/null 2>&1 \
+    || gcloud iam service-accounts create "$G" --project="$PROJECT" --display-name="Bank of Anthos ($e)"
+  for r in roles/cloudsql.client roles/cloudtrace.agent roles/monitoring.metricWriter; do
+    gcloud projects add-iam-policy-binding "$PROJECT" \
+      --member="serviceAccount:$GE" --role="$r" --condition=None >/dev/null
+  done
+  # WI:GKE 的 default/boa-ksa 可模拟该 GSA(KSA 由应用侧建+注解)
+  gcloud iam service-accounts add-iam-policy-binding "$GE" --project="$PROJECT" \
+    --role=roles/iam.workloadIdentityUser \
+    --member="serviceAccount:$PROJECT.svc.id.goog[default/boa-ksa]" >/dev/null
+  echo "  ✓ $G(cloudsql.client/trace/monitoring + WI←default/boa-ksa)"
+}
+boa_identity dev
+boa_identity test
+boa_identity prod
+echo
+
 # ── 输出:填入 GitHub Repository Variables 的值 ──
 cat <<EOF
 =============================================================================
