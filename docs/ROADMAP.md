@@ -26,6 +26,17 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 
 **HA 说明**：Phase 1 只验 HA **配置**（REGIONAL + 跨区 secondaryZone）。failover **行为**测试（RPO=0/RTO<60s）属 Phase 4，需应用+流量。
 
+### A3：Bank of Anthos 落地 — ✅ 完成（Phase 2-6 前置已就绪）
+
+| 子步骤 | 内容 | 状态 |
+|---|---|---|
+| A3.2 | Bank of Anthos 部署到 dev GKE（内置 DB）+ 前端可访问 + loadgenerator 造流量 | ✅ |
+| A3.3 | 数据层切到托管 Cloud SQL：两库(accounts-db/ledger-db) + admin 用户 + WI(boa-ksa↔boa-gsa) + Cloud SQL Proxy sidecar | ✅ 登录验证数据来自 Cloud SQL |
+
+- 部署方式：`scripts/connect-boa-cloudsql.sh`（kubectl + 官方 manifests，钉死 v0.6.10）
+- 容量教训：e2-medium 共享核装不下（proxy sidecar），换 e2-standard-2 × 3
+- 已知坑：BoA populate job 的 proxy sidecar 跨容器 killall 杀不掉 → job 不 Complete（数据已灌，无害）
+
 ### 工程完善（Phase 1 之外的额外成果）
 
 | 成果 | 提交 | 说明 |
@@ -43,7 +54,7 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 ## 二、待办 Backlog
 
 ### A. Phase 1 收尾（剩余）
-- **A3【P0·前置】Bank of Anthos 落地到 GKE** —— Phase 2-6 总前置（详见第三部分）
+- ~~A3【P0·前置】Bank of Anthos 落地到 GKE~~ ✅ **已完成**（A3.2 内置 DB + A3.3 Cloud SQL，见第一部分）
 - A4【P1】main 分支保护补 Required status checks
 - A5【P2】CMEK 状态桶加密（用户暂缓）
 
@@ -58,6 +69,10 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 - B8【P3】staging 环境扩展 demo
 - B9【P1】应用连 Cloud SQL：Secret Manager + Workload Identity（A3 配套）
 - B10【P3】workflow_dispatch 输入定义需同步 main 才在 UI 生效（流程约定，或研究 Terraform Stacks/Terragrunt 迁移消除 greenfield 尖角）
+- **B12【P1】A3.3 codify 进 IaC**：目前建库/WI/secret/部署靠 `connect-boa-cloudsql.sh`(gcloud+kubectl);
+  应把库进 02-core-db terraform、WI/secret 进 workflow、应用交付演进到 GitOps(ArgoCD)。
+- **B13【P2】BoA populate job 的 proxy sidecar 改 v2 原生 sidecar**：现在 killall 跨容器杀不掉 proxy,
+  job 永远不 Complete(数据已灌,无害但不优雅)。
 - **B11【P2】destroy 的 PSA 拆除健壮化** —— 见下方"已知坑"。Cloud SQL 删除后 PSA 连接释放慢（20-30min+），
   `terraform destroy 01-network` 报 `Producer services still using this connection`，无强制手段。
   改进方向：① destroy 失败时自动 fallback 到 `gcloud compute networks peerings delete` 强删底层 peering；

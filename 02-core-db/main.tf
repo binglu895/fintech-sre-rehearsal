@@ -52,6 +52,23 @@ module "postgresql" {
   }
 }
 
+# ── Bank of Anthos 数据层(B12 codify)──
+# 两个库 + admin 用户,之前由 connect-boa-cloudsql.sh 用 gcloud 建,现纳入 terraform 声明式管理。
+# 密码:demo 用 admin;生产应走 Secret Manager(B9),届时需同步改 BoA config。
+resource "google_sql_database" "boa" {
+  for_each = toset(["accounts-db", "ledger-db"])
+  name     = each.key
+  instance = module.postgresql.instance_name
+  project  = var.project_id
+}
+
+resource "google_sql_user" "boa_admin" {
+  name     = "admin"
+  instance = module.postgresql.instance_name
+  password = var.boa_db_password
+  project  = var.project_id
+}
+
 output "instance_connection_name" {
   value = module.postgresql.instance_connection_name
 }

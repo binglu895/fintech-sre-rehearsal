@@ -45,3 +45,10 @@ variable "deletion_protection" {
   description = "删除保护。dev=false 便于反复演练,prod=true。destroy workflow 会临时覆盖为 false。"
   default     = true
 }
+
+variable "boa_db_password" {
+  type        = string
+  description = "Bank of Anthos 数据库 admin 用户密码。demo=admin(匹配 BoA 内置 config);生产应走 Secret Manager(B9)。"
+  default     = "admin"
+  sensitive   = true
+}
