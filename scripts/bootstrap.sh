@@ -53,6 +53,7 @@ gcloud services enable \
   compute.googleapis.com container.googleapis.com \
   sqladmin.googleapis.com servicenetworking.googleapis.com \
   iamcredentials.googleapis.com sts.googleapis.com \
+  monitoring.googleapis.com \
   --project="$PROJECT"
 echo
 
@@ -191,6 +192,30 @@ boa_identity test
 boa_identity prod
 echo
 
+# ── 7. 平台层身份(sa-fintech-platform)──
+# 独立管理可观测性(告警/看板),与业务部署 SA 职责分离:仅 monitoring.editor。
+# 由 platform-observability workflow 使用;不参与业务 IaC(01–04)。
+echo "== [7] 平台可观测性 SA =="
+PLAT_SA="sa-fintech-platform"
+PLAT_SA_EMAIL="$PLAT_SA@$PROJECT.iam.gserviceaccount.com"
+if gcloud iam service-accounts describe "$PLAT_SA_EMAIL" --project="$PROJECT" >/dev/null 2>&1; then
+  echo "  $PLAT_SA_EMAIL 已存在"
+else
+  gcloud iam service-accounts create "$PLAT_SA" \
+    --project="$PROJECT" --display-name="fintech platform observability"
+  echo "  ✓ $PLAT_SA_EMAIL"
+fi
+# monitoring.editor 覆盖:告警策略 / 看板 / 通知渠道 / SLO
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:$PLAT_SA_EMAIL" --role="roles/monitoring.editor" \
+  --condition=None >/dev/null
+# WIF 仓库级绑定(与业务 SA 同一 provider,仅 SA 不同)
+gcloud iam service-accounts add-iam-policy-binding "$PLAT_SA_EMAIL" \
+  --project="$PROJECT" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/$POOL_RES/attribute.repository/$REPO" >/dev/null
+echo "  ✓ $PLAT_SA(monitoring.editor + WIF←repo:$REPO)"
+echo
+
 # ── 输出:填入 GitHub Repository Variables 的值 ──
 cat <<EOF
 =============================================================================
@@ -204,6 +229,10 @@ cat <<EOF
   GCP_SA_EMAIL_DEV   = sa-fintech-dev@$PROJECT.iam.gserviceaccount.com
   GCP_SA_EMAIL_TEST  = sa-fintech-test@$PROJECT.iam.gserviceaccount.com
   GCP_SA_EMAIL_PROD  = sa-fintech-prod@$PROJECT.iam.gserviceaccount.com
+
+  # 平台层(可观测性)独立身份 —— platform-observability workflow 用:
+  WIF_PROVIDER_PLATFORM = $PROVIDER_RES
+  GCP_SA_EMAIL_PLATFORM = sa-fintech-platform@$PROJECT.iam.gserviceaccount.com
 -----------------------------------------------------------------------------
 接着创建 3 个 Environment(dev / test / production-apply)并配审批,
 详见 docs/SETUP-3ENV.md 第三节。
