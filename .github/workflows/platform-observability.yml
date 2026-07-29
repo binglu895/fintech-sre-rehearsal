@@ -1,0 +1,84 @@
+name: platform-observability
+
+# 平台层可观测性(告警 + 黄金信号看板)——独立于业务 IaC 流水线单独管理。
+# 【独立性】自有 workflow + 自有 state(platform-observability/state)+ 平台 SA(sa-fintech-platform);
+#          不进 gcp-fintech-apply/destroy 的 01→04 业务层循环。
+# 【身份】平台 SA 与业务部署 SA 分离(职责分离):仅 roles/monitoring.editor。
+# 手动 apply/destroy;env 决定 scope 的集群(fintech-<env>-gke)+ state 前缀。
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "环境:dev / test / prod"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      action:
+        description: "apply=部署/更新 / destroy=删除"
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - destroy
+      confirm:
+        description: "destroy 时必须输入 DESTROY 才执行(apply 忽略)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  observability:
+    runs-on: ubuntu-latest
+    # prod 走审批门;dev/test 各自环境
+    environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
+      LAYER_DIR: platform-observability
+    steps:
+      - uses: actions/checkout@v4
+
+      # 平台专用身份(与业务 SA 分离)
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_PLATFORM }}
+          service_account: ${{ vars.GCP_SA_EMAIL_PLATFORM }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: 恢复 provider 缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('platform-observability/provider.tf') }}
+          restore-keys: tf-plugins-${{ runner.os }}-
+      - name: 准备缓存目录
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: ${{ inputs.action }} 平台可观测性 [${{ inputs.env }}]
+        env:
+          ENVN: ${{ inputs.env }}
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$LAYER_DIR"
+          terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/platform-observability.backend.hcl"
+          if [ "$ACTION" = "apply" ]; then
+            terraform apply -auto-approve -var-file="$GITHUB_WORKSPACE/envs/$ENVN/platform-observability.tfvars"
+            echo "::notice::平台可观测性已 apply [$ENVN]。告警发往 tfvars 中的 notification_email;看板见控制台 Monitoring → Dashboards。"
+          else
+            if [ "$CONFIRM" != "DESTROY" ]; then
+              echo "::error::destroy 需输入确认词 DESTROY(实际:$CONFIRM),已中止。"
+              exit 1
+            fi
+            terraform destroy -auto-approve -var-file="$GITHUB_WORKSPACE/envs/$ENVN/platform-observability.tfvars"
+            echo "::notice::平台可观测性已 destroy [$ENVN]。"
+          fi
