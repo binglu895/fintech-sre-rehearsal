@@ -85,9 +85,12 @@ jobs:
             echo "==================== 销毁 [$ENVN] $L ===================="
             cd "$GITHUB_WORKSPACE/$L"
             terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/$L.backend.hcl"
-            # 02-core-db 若开了 deletion_protection,须先关闭才能删
+            # 02-core-db 若开了 deletion_protection,须先关闭才能删。
+            # 用 -target=module.postgresql 只改实例(不触碰 B12 顶层库资源
+            # google_sql_database.boa),避免在"库由 gcloud 建、不在 state"的环境上
+            # 全量 apply 报 "already exists"。
             if [ "$L" = "02-core-db" ]; then
-              terraform apply -auto-approve \
+              terraform apply -auto-approve -target=module.postgresql \
                 -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
                 -var="deletion_protection=false"
             fi
