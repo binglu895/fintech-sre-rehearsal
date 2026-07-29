@@ -56,17 +56,19 @@ module "postgresql" {
 # 两个库 + admin 用户,之前由 connect-boa-cloudsql.sh 用 gcloud 建,现纳入 terraform 声明式管理。
 # 密码:demo 用 admin;生产应走 Secret Manager(B9),届时需同步改 BoA config。
 resource "google_sql_database" "boa" {
-  for_each = toset(["accounts-db", "ledger-db"])
-  name     = each.key
-  instance = module.postgresql.instance_name
-  project  = var.project_id
+  for_each   = toset(["accounts-db", "ledger-db"])
+  name       = each.key
+  instance   = module.postgresql.instance_name
+  project    = var.project_id
+  depends_on = [module.postgresql] # 必须等实例(及模块内 db/user)建完,否则并行创建报 instance 不存在
 }
 
 resource "google_sql_user" "boa_admin" {
-  name     = "admin"
-  instance = module.postgresql.instance_name
-  password = var.boa_db_password
-  project  = var.project_id
+  name       = "admin"
+  instance   = module.postgresql.instance_name
+  password   = var.boa_db_password
+  project    = var.project_id
+  depends_on = [module.postgresql]
 }
 
 output "instance_connection_name" {
