@@ -49,6 +49,15 @@
 2. **Phase 3 混沌**时做首个 AIOps PoC：LLM 读"注入故障后的错误日志+trace" → 输出根因假设 + rollback/canary 建议，**只生成建议不自动执行**，人工核对准确率。
 3. 准确率够 → 接 **Argo Rollouts** 做「建议→影子发布→SLO 校验→自动回滚」首个闭环（全程门控）。
 
+### vs 前沿主流（定位，判断截至 2026 初）
+AIOps 正从**传统 ML-AIOps**（事件关联/异常检测/拓扑 RCA，如 Dynatrace Davis/Datadog Watchdog/Moogsoft）过渡到
+**Agentic AIOps / "AI SRE"**（LLM agent 调查循环 + OTel + eBPF 零码 + 因果 AI + 持续 profiling + 变更智能，如 Datadog Bits AI/Grafana Sift/Cleric/Traversal/Causely）。
+
+- **我们领先/对齐**：治理·人在环·审计·OPA·数据驻留（fintech 级，领先多数商业方案）；渐进自治（suggestion-first）；**PR-as-action**（GitOps 承载 AI 行动，可审计可逆）；SLO 门控闭环。
+- **我们落后/过简**：① 推理层"一次性读日志"→ 应为 **agentic 调查循环**（工具+迭代+证据引用）；② 缺 **变更智能**（头号 RCA 加速器）；③ 缺 **因果/拓扑 grounding**（压幻觉）；④ 数据面缺 **eBPF 零码 + profiling**；⑤ 无 **eval/反馈**；⑥ 未控 **token/成本**（关联降噪+tail-sampling）；⑦ 漏 **提示注入**（日志=攻击者可注入=不可信输入，fintech 安全面）；⑧ 未用**现成 ML**（Adaptive Protection/SQL Insights/Monitoring anomaly）。
+
+→ 补齐见 Backlog **AI 系列**。补 ①–④ 从"上一代+LLM 点缀"跨到"真 agentic AI SRE";⑤–⑧ 让它可度量·可控成本·可审计（差异化）。
+
 ---
 
 ## 一、已完成（Phase 1 + 工程完善）
@@ -145,6 +154,18 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 - **O4【P2】日志操作化**：log-based metric（错误签名）+ 日志告警 + 结构化/JSON 日志 + 留存策略。
 - **O5【P2】追踪验证与利用**：验证 Cloud Trace 收到 BoA trace + 服务依赖图；OTel 统一埋点（反锁定）。
 - **O6【P2】on-call 演进**：邮件通知渠道 → PagerDuty/Opsgenie；告警接工单。
+
+### AI. AIOps 硬化（对齐前沿"AI SRE"，见北极星 vs 前沿；标注 工作量 S/M/L + 成本量级）
+- **AI1【P1·L】推理层：一次性 → agentic 调查循环**：ReAct + 工具集（查指标/拉日志/取 trace/diff 部署/只读 kubectl）+ 迭代 + **每结论附证据**。与前沿最大代差。成本主驱动 = LLM 推理（Vertex AI/Gemini 或 Claude）。
+- **AI2【P1·S】变更智能（一等信号）**：CI/CD 部署/配置事件 → Pub/Sub→BigQuery + "what changed" 工具。**现成流水线，ROI 最高，近零基建成本。**
+- **AI3【P2·M】因果/拓扑 grounding**：从 Cloud Trace/eBPF 建服务依赖图约束 LLM，压 RCA 幻觉。用现有 trace，基建成本低。
+- **AI4【P2·M】eBPF 零码 + 持续 profiling**：Beyla/Grafana Alloy（轻）或 Pixie（有节点开销）拿 RED+网络+安全信号 + **Cloud Profiler（免费）**。少改 BoA。
+- **AI5【P1·M】Eval harness + 反馈回流**：Phase 3 混沌当"labeled incident 工厂"→ 量 RCA 准确率/MTTR；人工反馈改 RAG/few-shot。BigQuery 存，基建近零。
+- **AI6【P2·M】关联降噪 + tail-sampling**：OTel Collector tail-sampling → 先成 incident 再 RCA；**净省钱**（降 trace/日志摄入 + 省 LLM token）。
+- **AI7【P1·S】提示注入防护**：遥测=不可信输入（结构化摘要、日志内容不得变指令、证据隔离与来源标注）。fintech 安全红线，纯工程无基建成本。
+- **AI8【P3·M】预测/预防 + 善用现成 ML**：Monitoring anomaly / BQML 预测 SLO 燃烧 → 预扩容；Cloud SQL Insights（免费）；Cloud Armor Adaptive Protection（Enterprise 层贵，演练用**标准规则**替代）。
+
+> 成本量级速记：**主驱动 = LLM 推理**（PoC 规模每次演练数美元级，Gemini Flash 更省）；eBPF 若用 Pixie 加 ~1 节点开销（Beyla 轻）；Profiler/SQL Insights 免费；tail-sampling/关联降噪**省钱**；**Adaptive Protection Enterprise 昂贵→演练跳过**。详见对话分析或 O0 部署后实测。
 
 ---
 
