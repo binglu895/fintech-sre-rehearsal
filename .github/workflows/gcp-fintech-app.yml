@@ -1,9 +1,11 @@
 name: gcp-fintech-app
 
-# 手动部署/删除 Bank of Anthos 应用层(A3)到指定环境的 GKE。
-# A3.2:先用 BoA 自带的内置 DB(in-cluster PostgreSQL)跑通。
-# A3.3(后续):再切到 02 层的 Cloud SQL(Workload Identity + Cloud SQL Proxy)。
-# 应用交付方式:kubectl + 官方 manifests(版本钉死);目标态演进到 GitOps(ArgoCD)。
+# 手动部署/删除 Bank of Anthos(Cloud SQL 版)到指定环境的 GKE(A3)。
+# 【前置(terraform)】gcp-fintech-apply env=<env> layer=ALL 已 apply:
+#   02-core-db → accounts-db/ledger-db 库 + admin 用户
+#   04-apps    → boa-gsa-<env> + IAM(cloudsql.client 等) + Workload Identity 绑定
+# 【本 workflow(应用侧)】KSA 注解 + cloud-sql-admin secret + 部署带 proxy sidecar 的 BoA。
+# 应用交付:kubectl + 官方 manifests(版本钉死);目标态演进到 GitOps(ArgoCD)。
 on:
   workflow_dispatch:
     inputs:
@@ -28,6 +30,10 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  PROJECT: kqeardr-gcp-shimano-internal
+  NS: default
+
 jobs:
   app:
     runs-on: ubuntu-latest
@@ -42,8 +48,7 @@ jobs:
           workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
           service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
 
-      # 取 GKE 凭证(自动装 gke-gcloud-auth-plugin + 写 kubeconfig)
-      # dev/test 是 zonal 集群(location=zone);prod 是 regional(location=region)
+      # 取 GKE 凭证(dev/test 是 zonal→location=zone;prod 是 regional→location=region)
       - uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: fintech-${{ inputs.env }}-gke
@@ -52,25 +57,48 @@ jobs:
       - name: 拉取 Bank of Anthos(版本钉死)
         run: git clone --depth 1 --branch ${{ inputs.boa_ref }} https://github.com/GoogleCloudPlatform/bank-of-anthos.git boa
 
-      - name: ${{ inputs.action }} Bank of Anthos
+      - name: ${{ inputs.action }} Bank of Anthos(Cloud SQL 版)
         env:
           ACTION: ${{ inputs.action }}
+          ENVN: ${{ inputs.env }}
         run: |
           set -euo pipefail
+          KSA=boa-ksa
+          GSA="boa-gsa-$ENVN"
+          INSTANCE="ledger-db-$ENVN"
+          CONN=$(gcloud sql instances describe "$INSTANCE" --project="$PROJECT" --format='value(connectionName)')
+          echo "▶ 环境=$ENVN  GSA=$GSA  连接名=$CONN"
+
           if [ "$ACTION" = "deploy" ]; then
-            kubectl apply -f boa/extras/jwt/jwt-secret.yaml
-            kubectl apply -f boa/kubernetes-manifests
-            echo "等待 frontend 外部 IP 分配..."
+            # ① KSA + 注解(GSA/IAM/WI 由 terraform 04-apps 管)
+            kubectl create serviceaccount "$KSA" -n "$NS" || true
+            kubectl annotate serviceaccount "$KSA" -n "$NS" --overwrite \
+              iam.gke.io/gcp-service-account="$GSA@$PROJECT.iam.gserviceaccount.com"
+
+            # ② cloud-sql-admin secret(库/用户由 terraform 02 管;这里给 proxy 连接名 + 凭证)
+            kubectl create secret -n "$NS" generic cloud-sql-admin \
+              --from-literal=username=admin --from-literal=password=admin \
+              --from-literal=connectionName="$CONN" \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+            # ③ 部署 Cloud SQL 版(删内置 DB 版若存在 → config + populate-jobs + 带 proxy 的服务)
+            kubectl delete -f boa/kubernetes-manifests --ignore-not-found -n "$NS"
+            kubectl apply -n "$NS" -f boa/extras/cloudsql/kubernetes-manifests/config.yaml
+            kubectl apply -n "$NS" -f boa/extras/cloudsql/populate-jobs
+            kubectl apply -n "$NS" -f boa/extras/cloudsql/kubernetes-manifests
+
+            echo "等待 frontend 外部 IP..."
             IP=""
             for i in $(seq 1 30); do
-              IP=$(kubectl get svc frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+              IP=$(kubectl get svc frontend -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
               [ -n "$IP" ] && break
               sleep 10
             done
-            echo "::notice::Bank of Anthos 前端: http://${IP:-<还在分配,稍后 kubectl get svc frontend>}"
+            echo "::notice::Bank of Anthos 前端: http://${IP:-<还在分配,稍后 kubectl get svc frontend>}  登录 testuser/bankofanthos"
             kubectl get pods
           else
-            kubectl delete -f boa/kubernetes-manifests --ignore-not-found
-            kubectl delete -f boa/extras/jwt/jwt-secret.yaml --ignore-not-found
-            echo "::notice::已删除 Bank of Anthos(内置 DB 的 PVC 可能需手动清:kubectl get pvc)"
+            kubectl delete -n "$NS" -f boa/extras/cloudsql/kubernetes-manifests --ignore-not-found
+            kubectl delete -n "$NS" -f boa/extras/cloudsql/populate-jobs --ignore-not-found
+            kubectl delete -n "$NS" -f boa/extras/cloudsql/kubernetes-manifests/config.yaml --ignore-not-found
+            echo "::notice::已删除 Bank of Anthos(Cloud SQL 版)。KSA/secret 保留;删前端 LB 记得 kubectl delete svc frontend"
           fi

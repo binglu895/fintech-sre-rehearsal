@@ -53,6 +53,7 @@ gcloud services enable \
   compute.googleapis.com container.googleapis.com \
   sqladmin.googleapis.com servicenetworking.googleapis.com \
   iamcredentials.googleapis.com sts.googleapis.com \
+  monitoring.googleapis.com \
   --project="$PROJECT"
 echo
 
@@ -166,6 +167,62 @@ bind_repo test
 bind_repo prod
 echo
 
+# ── 6. Bank of Anthos 应用身份(boa-gsa-<env> + IAM + Workload Identity)──
+# 放这里(bootstrap,特权账号)而非 04-apps terraform:per-env 部署 SA 无 IAM 管理权(防提权)。
+# KSA(default/boa-ksa)本身由应用侧(gcp-fintech-app workflow)创建并加注解。
+echo "== [6] Bank of Anthos 应用 GSA + Workload Identity =="
+boa_identity() {  # $1=env
+  local e="$1"
+  local G="boa-gsa-$e"
+  local GE="$G@$PROJECT.iam.gserviceaccount.com"
+  gcloud iam service-accounts describe "$GE" --project="$PROJECT" >/dev/null 2>&1 \
+    || gcloud iam service-accounts create "$G" --project="$PROJECT" --display-name="Bank of Anthos ($e)"
+  for r in roles/cloudsql.client roles/cloudtrace.agent roles/monitoring.metricWriter; do
+    gcloud projects add-iam-policy-binding "$PROJECT" \
+      --member="serviceAccount:$GE" --role="$r" --condition=None >/dev/null
+  done
+  # WI:GKE 的 default/boa-ksa 可模拟该 GSA(KSA 由应用侧建+注解)
+  gcloud iam service-accounts add-iam-policy-binding "$GE" --project="$PROJECT" \
+    --role=roles/iam.workloadIdentityUser \
+    --member="serviceAccount:$PROJECT.svc.id.goog[default/boa-ksa]" >/dev/null
+  echo "  ✓ $G(cloudsql.client/trace/monitoring + WI←default/boa-ksa)"
+}
+boa_identity dev
+boa_identity test
+boa_identity prod
+echo
+
+# ── 7. 平台层身份(sa-fintech-platform)──
+# 独立管理可观测性(告警/看板),与业务部署 SA 职责分离:仅 monitoring.editor。
+# 由 platform-observability workflow 使用;不参与业务 IaC(01–04)。
+echo "== [7] 平台可观测性 SA =="
+PLAT_SA="sa-fintech-platform"
+PLAT_SA_EMAIL="$PLAT_SA@$PROJECT.iam.gserviceaccount.com"
+if gcloud iam service-accounts describe "$PLAT_SA_EMAIL" --project="$PROJECT" >/dev/null 2>&1; then
+  echo "  $PLAT_SA_EMAIL 已存在"
+else
+  gcloud iam service-accounts create "$PLAT_SA" \
+    --project="$PROJECT" --display-name="fintech platform observability"
+  echo "  ✓ $PLAT_SA_EMAIL"
+fi
+# monitoring.editor 覆盖:告警策略 / 看板 / 通知渠道 / SLO
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:$PLAT_SA_EMAIL" --role="roles/monitoring.editor" \
+  --condition=None >/dev/null
+# state 桶读写:Terraform backend 需要 storage.objects.list/get/create/delete
+for e in "${ENVS[@]}"; do
+  gcloud storage buckets add-iam-policy-binding "gs://fintech-iac-states-$e" \
+    --member="serviceAccount:$PLAT_SA_EMAIL" \
+    --role="roles/storage.objectAdmin" >/dev/null
+done
+echo "  ✓ $PLAT_SA 已授 state 桶 objectAdmin(dev/test/prod)"
+# WIF 仓库级绑定(与业务 SA 同一 provider,仅 SA 不同)
+gcloud iam service-accounts add-iam-policy-binding "$PLAT_SA_EMAIL" \
+  --project="$PROJECT" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/$POOL_RES/attribute.repository/$REPO" >/dev/null
+echo "  ✓ $PLAT_SA(monitoring.editor + WIF←repo:$REPO)"
+echo
+
 # ── 输出:填入 GitHub Repository Variables 的值 ──
 cat <<EOF
 =============================================================================
@@ -179,6 +236,10 @@ cat <<EOF
   GCP_SA_EMAIL_DEV   = sa-fintech-dev@$PROJECT.iam.gserviceaccount.com
   GCP_SA_EMAIL_TEST  = sa-fintech-test@$PROJECT.iam.gserviceaccount.com
   GCP_SA_EMAIL_PROD  = sa-fintech-prod@$PROJECT.iam.gserviceaccount.com
+
+  # 平台层(可观测性)独立身份 —— platform-observability workflow 用:
+  WIF_PROVIDER_PLATFORM = $PROVIDER_RES
+  GCP_SA_EMAIL_PLATFORM = sa-fintech-platform@$PROJECT.iam.gserviceaccount.com
 -----------------------------------------------------------------------------
 接着创建 3 个 Environment(dev / test / production-apply)并配审批,
 详见 docs/SETUP-3ENV.md 第三节。

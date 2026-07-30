@@ -1,7 +1,12 @@
 # fintech-sre-rehearsal — 进度台账 & 后续实验规划
 
 > 本文是可读版记录（不依赖 gh）。GitHub Issues 版见 [`scripts/create-issues.sh`](../scripts/create-issues.sh)。
-> 更新日期：2026-07-26
+> 更新日期：2026-07-30
+
+---
+
+> **★ 北极星（AIOps）已独立管理** → 见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（愿景/分层架构/用例/vs 前沿/AI 系列 backlog/成本）。
+> 本文聚焦 **SRE 主线**（Phase 1-6 + 可观测性数据面 O 系列 + 架构补全）。AIOps 是长在本平台之上的后续层，**PARKED**，SRE 跑完再逐步推进。
 
 ---
 
@@ -48,6 +53,10 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 | 成本优化 | — | dev/test 单区小机型；SQL 降规格 |
 | 踩通真实企业 org policy | — | VPC Flow Logs 强制、SA 创建限制 |
 | 一键脚本 | — | `bootstrap.sh`（GCP 前置）、`create-issues.sh`（issue 台账）|
+| **平台层可观测性（独立管理）** | `4a6880b` | Cloud Ops Suite via Terraform：邮件通知渠道 + 3 告警（容器/节点 CPU 饱和、容器重启）+ 黄金信号看板骨架。独立 workflow/state/SA（`sa-fintech-platform`）。选型见 [OBSERVABILITY.md](OBSERVABILITY.md)。**⚠️ 已编码，未部署**（环境已 destroy，workflow 未跑）|
+
+> **可观测性现状（诚实台账）**：三支柱只做了"骨架 + 部分基础设施指标，且停在代码层没上线"。
+> ✅ 已编码：饱和度告警 + 通知渠道 + 看板骨架。❌ 未做：应用级性能指标（P99/QPS/错误率）、日志任何加工、追踪验证与利用。见 Backlog **O 系列** + **Phase 2.5**。
 
 ---
 
@@ -77,6 +86,26 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
   `terraform destroy 01-network` 报 `Producer services still using this connection`，无强制手段。
   改进方向：① destroy 失败时自动 fallback 到 `gcloud compute networks peerings delete` 强删底层 peering；
   ② 或把 servicenetworking connection 移出 terraform（out-of-band 管理）；③ 或加带耐心的重试。
+- **B14【P1】destroy 工作流健壮化（空层/已删场景）**：destroy 重跑时踩到两个坑——
+  ① 02 的"关删除保护"预 apply（`terraform apply -target=module.postgresql`）在**库/实例已删 + 上游 network state 已空**时，
+  会因读不到 `data.terraform_remote_state.network.outputs.network_self_link` 报错。应加"实例存在才跑"守卫。
+  ② 已删空的层应跳过，别重复 plan-destroy。配合 B11（PSA 强删）。
+
+### O. 可观测性数据面（AIOps 前置 · 三支柱 · 见 Phase 2.5）
+- **O0【P1】部署已编码的 platform-observability 层**：重建 dev 后先跑 workflow（Branch=main, env=dev, apply），
+  基础设施饱和度告警 + 黄金信号看板骨架先上线。前置：bootstrap 建平台 SA + 加 2 个 GitHub 变量（见 README）。
+- **O1【P1】应用级黄金信号 · L7 边缘（最快，不改应用）**：frontend 从 `Service type=LoadBalancer`(L4) 换成
+  **GKE Gateway/Ingress** → L7 HTTPS LB，自带 `loadbalancing.googleapis.com/https/{request_count,backend_latencies}`
+  → Latency(P99)/Traffic(QPS)/Errors(5xx)。新 `05-ingress` 层 + platform-observability 加延迟/5xx 告警。（顺带 Phase 5 的 L7 入口）
+- **O2【P1】逐服务 RED · GMP**：启用 Managed Service for Prometheus + `PodMonitoring` 抓 BoA 指标
+  （Java 服务暴露 micrometer-prometheus，或 OTel→GMP）。PromQL 出各微服务 P99/QPS/错误率。
+- **O3【P1】SLO + 多窗口燃烧率告警**：`google_monitoring_slo`（可用性 99.9% / P99<500ms）
+  + Google SRE workbook 式多窗口多燃烧率告警。从"CPU 饱和"升级到"用户体验 SLO"驱动。
+- **O4【P2】日志操作化**：log-based metric（错误签名）+ 日志告警 + 结构化/JSON 日志 + 留存策略。
+- **O5【P2】追踪验证与利用**：验证 Cloud Trace 收到 BoA trace + 服务依赖图；OTel 统一埋点（反锁定）。
+- **O6【P2】on-call 演进**：邮件通知渠道 → PagerDuty/Opsgenie；告警接工单。
+
+> **AI 系列（AIOps 硬化）已移出** → 见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（AI1-AI8 + 工作量/成本 + LLM 载体）。PARKED，SRE 主线完成后推进。
 
 ---
 
@@ -105,6 +134,17 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 | **步骤** | ① JMeter 对前端/转账 API 施压<br>② 观察 GKE HPA（Pod 水平扩容）<br>③ GKE 节点自动扩容（cluster autoscaler / node auto-provisioning）<br>④ Cloud SQL 加只读副本，验证读写分离 |
 | **IaC 改动** | 03 层开 autoscaler；BoA 服务配 HPA；02 层加 `read_replica` |
 | **验收** | P99<500ms、扩容生效<2min、不宕机 |
+
+### Phase 2.5：🔭 可观测性数据面（AIOps 前置）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 凑齐三支柱（指标/日志/追踪）+ SLO，作为 AIOps 的干净数据面 |
+| **前置** | A3 + platform-observability 已部署（O0）|
+| **步骤** | ① O1 L7 Ingress → 应用级黄金信号(P99/QPS/5xx)<br>② O2 GMP + PodMonitoring → 逐服务 RED<br>③ O3 SLO + 多窗口燃烧率告警<br>④ O4 日志派生指标+告警<br>⑤ O5 验证 Cloud Trace + OTel 埋点 |
+| **IaC 改动** | 新 `05-ingress` 层；platform-observability 加 SLO/延迟/5xx 告警 + PodMonitoring |
+| **验收** | 黄金信号四格齐全；SLO 燃烧率告警可触发；trace 可查服务依赖 |
+| **意义** | 没有这层，Phase 3 起的 AIOps PoC 没有信号可喂 |
 
 ### Phase 3：💥 混沌工程与爆炸半径
 
@@ -152,14 +192,19 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 ## 四、实验推进建议顺序
 
 ```
-A3 Bank of Anthos 落地(前置)
+A3 Bank of Anthos 落地(前置)  ✅
    │
-   ├─ Phase 2 压测扩容(需先配 HPA/autoscaler/只读副本)
-   ├─ Phase 3 混沌(装 Chaos Mesh)
-   ├─ Phase 4 灾备(应用+流量下真测 failover)   ← 关闭 Phase 1 遗留的"HA行为测试"
-   ├─ Phase 5 零信任(Cloud Armor + ASM)
-   └─ Phase 6 开发者平台(Backstage)
+   ├─ Phase 2   压测扩容(HPA/autoscaler/只读副本)
+   ├─ Phase 2.5 可观测性数据面(O 系列:L7 Ingress+GMP+SLO+日志+trace)  ← AIOps 前置
+   │      │
+   │      └─ 首个 AIOps PoC 从 Phase 3 起接入(LLM 读日志/trace → 只生成建议)
+   ├─ Phase 3   混沌(装 Chaos Mesh)              → AIOps:日志发现问题→方案→影子发布
+   ├─ Phase 4   灾备(应用+流量下真测 failover)   ← 关闭 Phase 1 遗留的"HA行为测试"
+   ├─ Phase 5   零信任(Cloud Armor + ASM)        → AIOps:异常流量→防御策略
+   └─ Phase 6   开发者平台(Backstage)            → AIOps:请求/issue→可行性/应对
 ```
+
+**北极星贯穿**：每个 Phase 既锻炼三环境流水线，又给 AIOps agent 造训练/验证数据集 + 安全闭环。终局见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（PARKED，SRE 主线完成后推进）。
 
 **每个 Phase 都会带来对应的 IaC 改动**（Phase 2 的 HPA/autoscaler/只读副本、Phase 5 的 Cloud Armor/ASM 等），正好继续锻炼这套三环境流水线——**先在 dev 迭代验证，再走晋升链上 test/prod**。
 
