@@ -18,12 +18,12 @@ on:
         options:
           - phase2-loadtest
       action:
-        description: "操作"
+        description: "演练阶段：load=制造事故(不装HPA) / remediate=处置(装HPA) / status=查看 / stop=收尾"
         required: true
         type: choice
-        options: [start, stop, status]
+        options: [load, remediate, status, stop]
       replicas:
-        description: "loadgenerator 副本数（仅 phase2-loadtest start 时生效）"
+        description: "loadgenerator 副本数（仅 load 阶段生效）"
         required: false
         default: "6"
         type: string
