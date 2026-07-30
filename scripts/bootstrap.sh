@@ -209,6 +209,13 @@ fi
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member="serviceAccount:$PLAT_SA_EMAIL" --role="roles/monitoring.editor" \
   --condition=None >/dev/null
+# state 桶读写:Terraform backend 需要 storage.objects.list/get/create/delete
+for e in "${ENVS[@]}"; do
+  gcloud storage buckets add-iam-policy-binding "gs://fintech-iac-states-$e" \
+    --member="serviceAccount:$PLAT_SA_EMAIL" \
+    --role="roles/storage.objectAdmin" >/dev/null
+done
+echo "  ✓ $PLAT_SA 已授 state 桶 objectAdmin(dev/test/prod)"
 # WIF 仓库级绑定(与业务 SA 同一 provider,仅 SA 不同)
 gcloud iam service-accounts add-iam-policy-binding "$PLAT_SA_EMAIL" \
   --project="$PROJECT" --role=roles/iam.workloadIdentityUser \

@@ -1,0 +1,62 @@
+name: gcp-fintech-scenario
+
+# 通用测试场景 workflow。
+# 每个场景对应 scenarios/<scenario>/ 目录，包含 run.sh（处理 start/stop/status）和场景资源文件。
+# 新增场景只需在 scenarios/ 下新建目录，本 workflow 无需修改。
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "目标环境"
+        required: true
+        type: choice
+        options: [dev, test, prod]
+      scenario:
+        description: "测试场景（scenarios/ 下的目录名）"
+        required: true
+        type: choice
+        options:
+          - phase2-loadtest
+      action:
+        description: "操作"
+        required: true
+        type: choice
+        options: [start, stop, status]
+      replicas:
+        description: "loadgenerator 副本数（仅 phase2-loadtest start 时生效）"
+        required: false
+        default: "6"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PROJECT: kqeardr-gcp-shimano-internal
+
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env == 'prod' && 'production-apply' || inputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+          service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', inputs.env == 'dev' && 'DEV' || (inputs.env == 'test' && 'TEST' || 'PROD'))] }}
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: fintech-${{ inputs.env }}-gke
+          location: ${{ inputs.env == 'prod' && 'asia-northeast1' || 'asia-northeast1-a' }}
+
+      - name: 运行场景 ${{ inputs.scenario }} / ${{ inputs.action }}
+        env:
+          ACTION: ${{ inputs.action }}
+          REPLICAS: ${{ inputs.replicas }}
+        run: |
+          chmod +x scenarios/${{ inputs.scenario }}/run.sh
+          scenarios/${{ inputs.scenario }}/run.sh
