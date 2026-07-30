@@ -5,58 +5,8 @@
 
 ---
 
-## ★ 北极星：fintech AIOps（终极目的）
-
-本实验的终局：**用一个逼真的 fintech 栈（Bank of Anthos + 三环境 CI/CD + 真实攻防/负载场景），在合规护栏内把「可观测性数据面 → LLM 推理 → 门控自动化」这条 AIOps 闭环一段段跑通。**
-
-关键认知：**可观测性（指标/日志/追踪）不是终点，是 AIOps 的数据面**——没有干净信号 + 事件流，AI 无从分析。这个平台 = 安全训练/验证 AIOps agent 的沙箱（不能让 AI 直接在生产上"发现问题、自动发布、自动封 IP"，得先在逼真环境跑通闭环）。
-
-### 分层参考架构（自下而上）
-```
-⑤ 治理护栏（横切）：人在环审批 · 审计可追溯 · OPA 策略即代码 · 最小权限 · 可解释
-④ 闭环行动（门控）：渐进发布 canary/shadow · GitOps 修复PR · Cloud Armor 规则 · 告警/工单
-③ 推理决策：LLM agent + RAG(runbook/拓扑/历史) → 根因 · 方案 · 风险/成本评估
-② 检测：异常检测 · 信号关联 · SLO 燃烧率
-① 遥测数据面：指标 GMP · 日志 Cloud Logging · 追踪 OTel · 事件/审计 · 安全流日志
-```
-
-### 目标用例 → 架构映射
-| 用例 | ①数据 | ②检测 | ③推理 | ④行动（门控）|
-|---|---|---|---|---|
-| 日志发现问题→方案→影子发布 | 日志+trace+部署 diff | 错误率异常/新签名 | 根因→修复方案 | Argo Rollouts canary/shadow → SLO 校验 → 自动回滚 |
-| 异常流量→定位攻击→防御→告警 | Flow Logs+Armor 日志 | 流量模式异常 | 分类攻击+定源 | 生成 Cloud Armor 规则(IaC PR) + 告 SOC |
-| 客户请求→可行性/风险/成本→日程 | 请求+架构/账单数据 | 意图解析 | 估可行/风险/成本 | 方案+日程草案 → 审批 |
-| 用户 issue→分析→应对策略 | issue+历史工单/KB | 分类/去重/定级 | 定级+责任人+应对 | 建工单+建议回复 → 确认 |
-
-### fintech 红线（不可妥协）
-1. **人在环 + 门控**：碰钱/客户/生产的行动，AI 只提议，人/策略批准。
-2. **审计可追溯 + 可解释**：每个决策留痕、可复现、能向监管解释。
-3. **策略即代码护栏（OPA）** 框死 agent 能做什么（同现在卡业务部署 SA 的思路）。
-4. agent 用**独立最小权限 SA**（同平台 SA / 部署 SA 分离思路）。
-5. **数据驻留**：喂 LLM 的遥测不出境 → Vertex AI / 项目内（同昨天监控选型）。
-
-### 每个 Phase 喂给哪个 AIOps 用例
-| Phase | 产出信号 | AIOps 用例 |
-|---|---|---|
-| 2 压测/HPA | 性能指标/饱和度/扩缩事件 | 容量/性能异常 → 扩容建议 |
-| 3 混沌 | 故障→错误日志/trace | **日志发现问题→方案→影子发布（首个 PoC）** |
-| 4 DR/HA | 故障切换事件 | 韧性决策 |
-| 5 零信任/Armor | 攻击流量/WAF 日志 | **异常流量→防御策略** |
-| 6 Backstage | 请求/issue 工单流 | **请求/issue→可行性/应对** |
-
-### 接入顺序
-1. 先凑齐**三支柱数据面**（Backlog O 系列 + Phase 2.5）——没有干净信号，AIOps 无从谈起。
-2. **Phase 3 混沌**时做首个 AIOps PoC：LLM 读"注入故障后的错误日志+trace" → 输出根因假设 + rollback/canary 建议，**只生成建议不自动执行**，人工核对准确率。
-3. 准确率够 → 接 **Argo Rollouts** 做「建议→影子发布→SLO 校验→自动回滚」首个闭环（全程门控）。
-
-### vs 前沿主流（定位，判断截至 2026 初）
-AIOps 正从**传统 ML-AIOps**（事件关联/异常检测/拓扑 RCA，如 Dynatrace Davis/Datadog Watchdog/Moogsoft）过渡到
-**Agentic AIOps / "AI SRE"**（LLM agent 调查循环 + OTel + eBPF 零码 + 因果 AI + 持续 profiling + 变更智能，如 Datadog Bits AI/Grafana Sift/Cleric/Traversal/Causely）。
-
-- **我们领先/对齐**：治理·人在环·审计·OPA·数据驻留（fintech 级，领先多数商业方案）；渐进自治（suggestion-first）；**PR-as-action**（GitOps 承载 AI 行动，可审计可逆）；SLO 门控闭环。
-- **我们落后/过简**：① 推理层"一次性读日志"→ 应为 **agentic 调查循环**（工具+迭代+证据引用）；② 缺 **变更智能**（头号 RCA 加速器）；③ 缺 **因果/拓扑 grounding**（压幻觉）；④ 数据面缺 **eBPF 零码 + profiling**；⑤ 无 **eval/反馈**；⑥ 未控 **token/成本**（关联降噪+tail-sampling）；⑦ 漏 **提示注入**（日志=攻击者可注入=不可信输入，fintech 安全面）；⑧ 未用**现成 ML**（Adaptive Protection/SQL Insights/Monitoring anomaly）。
-
-→ 补齐见 Backlog **AI 系列**。补 ①–④ 从"上一代+LLM 点缀"跨到"真 agentic AI SRE";⑤–⑧ 让它可度量·可控成本·可审计（差异化）。
+> **★ 北极星（AIOps）已独立管理** → 见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（愿景/分层架构/用例/vs 前沿/AI 系列 backlog/成本）。
+> 本文聚焦 **SRE 主线**（Phase 1-6 + 可观测性数据面 O 系列 + 架构补全）。AIOps 是长在本平台之上的后续层，**PARKED**，SRE 跑完再逐步推进。
 
 ---
 
@@ -155,17 +105,7 @@ push main    → Test（自动部署）→ test_complete → Prod（卡 producti
 - **O5【P2】追踪验证与利用**：验证 Cloud Trace 收到 BoA trace + 服务依赖图；OTel 统一埋点（反锁定）。
 - **O6【P2】on-call 演进**：邮件通知渠道 → PagerDuty/Opsgenie；告警接工单。
 
-### AI. AIOps 硬化（对齐前沿"AI SRE"，见北极星 vs 前沿；标注 工作量 S/M/L + 成本量级）
-- **AI1【P1·L】推理层：一次性 → agentic 调查循环**：ReAct + 工具集（查指标/拉日志/取 trace/diff 部署/只读 kubectl）+ 迭代 + **每结论附证据**。与前沿最大代差。成本主驱动 = LLM 推理（Vertex AI/Gemini 或 Claude）。
-- **AI2【P1·S】变更智能（一等信号）**：CI/CD 部署/配置事件 → Pub/Sub→BigQuery + "what changed" 工具。**现成流水线，ROI 最高，近零基建成本。**
-- **AI3【P2·M】因果/拓扑 grounding**：从 Cloud Trace/eBPF 建服务依赖图约束 LLM，压 RCA 幻觉。用现有 trace，基建成本低。
-- **AI4【P2·M】eBPF 零码 + 持续 profiling**：Beyla/Grafana Alloy（轻）或 Pixie（有节点开销）拿 RED+网络+安全信号 + **Cloud Profiler（免费）**。少改 BoA。
-- **AI5【P1·M】Eval harness + 反馈回流**：Phase 3 混沌当"labeled incident 工厂"→ 量 RCA 准确率/MTTR；人工反馈改 RAG/few-shot。BigQuery 存，基建近零。
-- **AI6【P2·M】关联降噪 + tail-sampling**：OTel Collector tail-sampling → 先成 incident 再 RCA；**净省钱**（降 trace/日志摄入 + 省 LLM token）。
-- **AI7【P1·S】提示注入防护**：遥测=不可信输入（结构化摘要、日志内容不得变指令、证据隔离与来源标注）。fintech 安全红线，纯工程无基建成本。
-- **AI8【P3·M】预测/预防 + 善用现成 ML**：Monitoring anomaly / BQML 预测 SLO 燃烧 → 预扩容；Cloud SQL Insights（免费）；Cloud Armor Adaptive Protection（Enterprise 层贵，演练用**标准规则**替代）。
-
-> 成本量级速记：**主驱动 = LLM 推理**（PoC 规模每次演练数美元级，Gemini Flash 更省）；eBPF 若用 Pixie 加 ~1 节点开销（Beyla 轻）；Profiler/SQL Insights 免费；tail-sampling/关联降噪**省钱**；**Adaptive Protection Enterprise 昂贵→演练跳过**。详见对话分析或 O0 部署后实测。
+> **AI 系列（AIOps 硬化）已移出** → 见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（AI1-AI8 + 工作量/成本 + LLM 载体）。PARKED，SRE 主线完成后推进。
 
 ---
 
@@ -264,7 +204,7 @@ A3 Bank of Anthos 落地(前置)  ✅
    └─ Phase 6   开发者平台(Backstage)            → AIOps:请求/issue→可行性/应对
 ```
 
-**北极星贯穿**：每个 Phase 既锻炼三环境流水线，又给 AIOps agent 造训练/验证数据集 + 安全闭环。终局是「可观测性数据面 → LLM 推理 → 门控自动化」在合规护栏内跑通（见开头★节）。
+**北极星贯穿**：每个 Phase 既锻炼三环境流水线，又给 AIOps agent 造训练/验证数据集 + 安全闭环。终局见 [AIOPS-ROADMAP.md](AIOPS-ROADMAP.md)（PARKED，SRE 主线完成后推进）。
 
 **每个 Phase 都会带来对应的 IaC 改动**（Phase 2 的 HPA/autoscaler/只读副本、Phase 5 的 Cloud Armor/ASM 等），正好继续锻炼这套三环境流水线——**先在 dev 迭代验证，再走晋升链上 test/prod**。
 
