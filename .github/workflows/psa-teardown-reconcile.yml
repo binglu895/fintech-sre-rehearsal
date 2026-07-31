@@ -1,0 +1,101 @@
+name: psa-teardown-reconcile
+
+# 每天自动重试删除卡住的 PSA 残留(01-network)。
+# 背景:Cloud SQL 删除后,PSA 私有连接因生产者(Google 托管侧)未释放保留段而删不掉,
+#       报 "Producer services still using this connection"。这是 GCP 的异步释放延迟,
+#       可长达约一周;释放完成后 destroy 即可成功,但没人重试它就一直留着。
+# 机制:gcp-fintech-destroy 在 01-network 删除失败时登记 psa-teardown-pending issue;
+#       本任务每天按环境重试一次:成功→评论并关闭 issue;连续 7 天失败→打 needs-human 升级人工。
+#
+# 注意:schedule 只在默认分支(main)上触发。合并到 main 前,可用 workflow_dispatch 手动跑。
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 每天 UTC 02:00
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false      # 某环境失败不影响其他环境
+      matrix:
+        env: [dev, test, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 找本环境是否有待办 issue(标题精确匹配 "PSA teardown pending: <env>")
+      - name: 查找待办 issue
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="PSA teardown pending: ${{ matrix.env }}"
+          JSON=$(gh issue list --state open --label psa-teardown-pending \
+            --search "\"$TITLE\" in:title" --json number,createdAt || echo '[]')
+          NUM=$(echo "$JSON" | jq -r '.[0].number // empty')
+          CREATED=$(echo "$JSON" | jq -r '.[0].createdAt // empty')
+          echo "num=$NUM" >> "$GITHUB_OUTPUT"
+          echo "created=$CREATED" >> "$GITHUB_OUTPUT"
+          if [ -n "$NUM" ]; then
+            echo "[${{ matrix.env }}] 命中待办 issue #$NUM(创建于 $CREATED)"
+          else
+            echo "[${{ matrix.env }}] 无待办 issue,跳过"
+          fi
+
+      - name: GCP 认证
+        if: steps.find.outputs.num != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars[format('WIF_PROVIDER_{0}', matrix.env == 'dev' && 'DEV' || (matrix.env == 'test' && 'TEST' || 'PROD'))] }}
+          service_account: ${{ vars[format('GCP_SA_EMAIL_{0}', matrix.env == 'dev' && 'DEV' || (matrix.env == 'test' && 'TEST' || 'PROD'))] }}
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.find.outputs.num != ''
+
+      - name: 重试删除 01-network 并更新 issue
+        if: steps.find.outputs.num != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENVN: ${{ matrix.env }}
+          NUM: ${{ steps.find.outputs.num }}
+          CREATED: ${{ steps.find.outputs.created }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/01-network"
+          terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/01-network.backend.hcl"
+
+          # 单独捕获销毁结果,失败不中断,以便据此更新 issue
+          set +e
+          terraform plan -destroy -var-file="$GITHUB_WORKSPACE/envs/$ENVN/01-network.tfvars" -out=destroy.tfout \
+            && terraform apply -auto-approve destroy.tfout
+          RC=$?
+          set -e
+
+          if [ "$RC" -eq 0 ]; then
+            gh issue comment "$NUM" --body "✅ $(date -u +%F):01-network 残留已成功删除(生产者已释放保留段)。关闭本 issue。"
+            gh issue close "$NUM"
+            echo "[$ENVN] 已删除并关闭 issue #$NUM"
+          else
+            # 计算已等待天数
+            AGE_DAYS=0
+            if [ -n "${CREATED:-}" ]; then
+              AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$CREATED" +%s) ) / 86400 ))
+            fi
+            if [ "$AGE_DAYS" -ge 7 ]; then
+              gh label create needs-human --color D93F0B \
+                --description "自动流程搞不定,需人工介入" 2>/dev/null || true
+              gh issue edit "$NUM" --add-label needs-human
+              gh issue comment "$NUM" --body "⚠️ 已连续等待 ${AGE_DAYS} 天仍无法删除(生产者持续占用),超过 7 天阈值,**升级人工**。可选处理:手动强删 peering(\`gcloud compute networks peerings delete servicenetworking-googleapis-com --network=fintech-${ENVN}-vpc\`)后重跑 destroy,或开 GCP support 核查生产者残留。"
+              echo "::warning::[$ENVN] 01-network 残留超 7 天未清,已升级 needs-human(issue #$NUM)"
+            else
+              gh issue comment "$NUM" --body "⏳ 第 ${AGE_DAYS} 天重试:生产者仍占用,尚未可删,明天继续。"
+              echo "[$ENVN] 仍未可删(第 ${AGE_DAYS} 天),继续等待(issue #$NUM)"
+            fi
+          fi
