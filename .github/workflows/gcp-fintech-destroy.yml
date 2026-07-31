@@ -32,6 +32,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  issues: write   # 01-network PSA 残留删不掉时登记待办 issue,交异步对账
 
 jobs:
   destroy:
@@ -74,6 +75,7 @@ jobs:
         env:
           ENVN: ${{ inputs.env }}
           LAYER: ${{ inputs.layer }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # 供 gh 登记待办 issue
         run: |
           set -euo pipefail
           if [ "$LAYER" = "ALL" ]; then
@@ -115,6 +117,28 @@ jobs:
               if [ "$i" -lt "$ATTEMPTS" ]; then
                 echo "::warning::[$ENVN] $L 销毁第 $i 次失败(可能 PSA 释放延迟),90s 后重试..."
                 sleep 90
+              elif [ "$L" = "01-network" ]; then
+                # 01-network 重试用尽:大概率是 PSA 生产者(Cloud SQL 托管侧)尚未
+                # 释放保留段,报 "Producer services still using this connection"。
+                # 这是 GCP 已知的异步释放延迟(可长达约一周)。不强删、不 exit 1,
+                # 改为登记待办 issue,交由 psa-teardown-reconcile 每天自动重试。
+                echo "::warning::[$ENVN] 01-network 优雅删除 $ATTEMPTS 次仍失败(PSA 生产者未释放),转异步对账:登记 issue,每天重试,7 天未成升级人工。"
+                gh label create psa-teardown-pending --color BFD4F2 \
+                  --description "01-network PSA 残留待自动清理" 2>/dev/null || true
+                TITLE="PSA teardown pending: $ENVN"
+                RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                EXISTING=$(gh issue list --state open --label psa-teardown-pending \
+                  --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty' 2>/dev/null || true)
+                if [ -n "${EXISTING:-}" ]; then
+                  gh issue comment "$EXISTING" \
+                    --body "又一次 destroy 触发 01-network 残留(仍被生产者占用)。对账任务会继续每天重试。运行:$RUN_URL"
+                  echo "已存在待办 issue #$EXISTING,追加评论。"
+                else
+                  BODY=$(printf '环境:**%s** · 层:01-network\n\nCloud SQL 删除后 PSA 私有连接(`google_service_networking_connection.psa`)暂时删不掉——生产者(Cloud SQL 托管侧)尚未释放保留段,报 `Producer services still using this connection`。\n\n这是 GCP 已知的异步释放延迟(可长达约一周)。已交由定时任务 `psa-teardown-reconcile` **每天自动重试删除一次**:\n- 成功 → 本 issue 自动评论并关闭。\n- 连续 7 天仍失败 → 打 `needs-human` 标签升级人工(可能需手动强删 peering 或开 GCP support)。\n\n首次登记运行:%s' "$ENVN" "$RUN_URL")
+                  gh issue create --title "$TITLE" --label psa-teardown-pending --body "$BODY"
+                  echo "已创建待办 issue。"
+                fi
+                echo "==================== 01-network 交接异步对账(未即时删除)===================="
               else
                 echo "::error::[$ENVN] $L 销毁 $ATTEMPTS 次仍失败"
                 exit 1
