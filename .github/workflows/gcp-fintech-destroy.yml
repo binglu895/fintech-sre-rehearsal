@@ -89,10 +89,17 @@ jobs:
             # 用 -target=module.postgresql 只改实例(不触碰 B12 顶层库资源
             # google_sql_database.boa),避免在"库由 gcloud 建、不在 state"的环境上
             # 全量 apply 报 "already exists"。
+            # 前置 state list 检查:若 module 不在 state(从未部署或已销毁),
+            # 跳过此步——否则 Terraform 会计划 CREATE,进而读 network remote_state
+            # 导致 "outputs is object with no attributes" 错误。
             if [ "$L" = "02-core-db" ]; then
-              terraform apply -auto-approve -target=module.postgresql \
-                -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
-                -var="deletion_protection=false"
+              if terraform state list 2>/dev/null | grep -q "^module\.postgresql"; then
+                terraform apply -auto-approve -target=module.postgresql \
+                  -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
+                  -var="deletion_protection=false"
+              else
+                echo "02-core-db: module.postgresql 不在 state,跳过 deletion_protection 关闭步骤"
+              fi
             fi
             # 重试:PSA(私有服务连接)在 Cloud SQL 删除后有释放延迟,
             # 首次 destroy 常报 "Producer services still using this connection"。

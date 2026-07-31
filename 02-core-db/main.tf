@@ -29,9 +29,10 @@ module "postgresql" {
   deletion_protection = var.deletion_protection  # 红线②(dev 环境可豁免为 false)
 
   # 红线③:无公网 IP + 私有连接指向 01 层 VPC
+  # try() 防止 destroy 时 01-network state 为空导致 "outputs is object with no attributes"
   ip_configuration = {
     ipv4_enabled        = false
-    private_network     = data.terraform_remote_state.network.outputs.network_self_link
+    private_network     = try(data.terraform_remote_state.network.outputs.network_self_link, null)
     ssl_mode            = "ENCRYPTED_ONLY"
     allocated_ip_range  = null
     authorized_networks = []
