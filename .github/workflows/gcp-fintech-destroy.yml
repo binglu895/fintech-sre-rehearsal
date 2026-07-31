@@ -86,19 +86,20 @@ jobs:
             cd "$GITHUB_WORKSPACE/$L"
             terraform init -backend-config="$GITHUB_WORKSPACE/envs/$ENVN/$L.backend.hcl"
             # 02-core-db 若开了 deletion_protection,须先关闭才能删。
-            # 用 -target=module.postgresql 只改实例(不触碰 B12 顶层库资源
-            # google_sql_database.boa),避免在"库由 gcloud 建、不在 state"的环境上
-            # 全量 apply 报 "already exists"。
-            # 前置 state list 检查:若 module 不在 state(从未部署或已销毁),
-            # 跳过此步——否则 Terraform 会计划 CREATE,进而读 network remote_state
-            # 导致 "outputs is object with no attributes" 错误。
+            # 判断/target 都必须精确到 SQL 实例本身,不能用 "^module.postgresql":
+            #   模块内的 null_resource.module_depends_on 是依赖图的根,destroy 时最后才删,
+            #   一次中断的 destroy 常只剩它这一个孤儿留在 state。用前缀匹配会命中它 →
+            #   误判"实例还在" → 跑 apply → 实例其实不在 → 计划 CREATE → 失败
+            #   (先报 network 输出缺失,加 try() 后又报 "至少需一种 IP")。
+            #   实例不在 state 时应直接跳过,交由后面的 plan -destroy 清掉孤儿。
+            SQL_INSTANCE="module.postgresql.google_sql_database_instance.default"
             if [ "$L" = "02-core-db" ]; then
-              if terraform state list 2>/dev/null | grep -q "^module\.postgresql"; then
-                terraform apply -auto-approve -target=module.postgresql \
+              if terraform state list 2>/dev/null | grep -qxF "$SQL_INSTANCE"; then
+                terraform apply -auto-approve -target="$SQL_INSTANCE" \
                   -var-file="$GITHUB_WORKSPACE/envs/$ENVN/02-core-db.tfvars" \
                   -var="deletion_protection=false"
               else
-                echo "02-core-db: module.postgresql 不在 state,跳过 deletion_protection 关闭步骤"
+                echo "02-core-db: SQL 实例不在 state,跳过关删除保护(已删除或从未部署),交由 plan -destroy 清理残留"
               fi
             fi
             # 重试:PSA(私有服务连接)在 Cloud SQL 删除后有释放延迟,
